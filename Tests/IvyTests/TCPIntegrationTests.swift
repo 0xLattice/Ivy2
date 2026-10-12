@@ -184,6 +184,7 @@ final class TCPIntegrationTests: XCTestCase {
         await b.stop()
     }
 
+#if DEBUG || IVY_TESTING
     func testDialRewriteRedirectsTheSocketNotTheIdentity() async throws {
         let a = makeNode()
         let b = makeNode()
@@ -202,6 +203,7 @@ final class TCPIntegrationTests: XCTestCase {
         await a.stop()
         await b.stop()
     }
+#endif
 
     func testDialToClosedPortFails() async throws {
         let a = makeNode()
