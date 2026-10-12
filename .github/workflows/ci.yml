@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - run: swift --version
+      - run: swift build
+      - run: swift build -c release
+      - run: swift test
+      - name: The core has no I/O
+        run: |
+          ! grep -rnE "import NIO|import Dispatch|\bawait\b|Task\s*[{.(]|ContinuousClock|Date\(\)|SystemRandomNumberGenerator\(\)" Sources/IvyCore \
+            | grep -v "CoreTypes.swift.*SystemRandomNumberGenerator"
+      - name: A seeded run gives the same trace in separate processes
+        env:
+          IVY_TEST_SEED: "0x5eedcafe"
+        run: |
+          digest() { swift test --skip-build --filter DeterminismTests/testSeededTraceDigestIsPrinted 2>&1 | grep -o "IVY_TRACE_DIGEST.*"; }
+          first=$(digest); second=$(digest)
+          echo "$first"; echo "$second"
+          test -n "$first" && test "$first" = "$second"
+
+  interop:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - name: Ivy 15.0.1 and this checkout speak to each other
+        run: Interop/run.sh
+
+  sanitizer:
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - run: swift --version
+      - run: swift test --no-parallel --scratch-path .build-${{ matrix.sanitizer }} --sanitize ${{ matrix.sanitizer }}
+
+  stress:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build --build-tests
+      - name: Replay alternate seeds
+        run: |
+          for seed in $(seq 1 20); do
+            echo "seed ${seed}/20"
+            IVY_TEST_SEED=${seed} swift test --skip-build --filter DeterminismTests
+          done
