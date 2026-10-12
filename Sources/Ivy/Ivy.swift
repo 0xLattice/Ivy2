@@ -113,7 +113,11 @@ public actor Ivy {
     private func perform(_ effect: Effect) {
         switch effect {
         case .dial(let dial, let endpoint):
+#if DEBUG || IVY_TESTING
+            shell.dial(dial, dialEndpointRewrite?(endpoint) ?? endpoint)
+#else
             shell.dial(dial, endpoint)
+#endif
         case .write(let connection, let bytes):
             shell.write(connection, bytes)
         case .close(let connection):
@@ -475,4 +479,17 @@ public actor Ivy {
 
     /// The core's counters, for tests and operators.
     public var diagnostics: IvyCore.Diagnostics { core.diagnostics }
+
+#if DEBUG || IVY_TESTING
+    private var dialEndpointRewrite: (@Sendable (PeerEndpoint) -> PeerEndpoint)?
+
+    /// Redirects where the shell dials, leaving what the core believes it
+    /// dialled alone: nodes on one machine can then advertise routable
+    /// addresses, which is the only kind a referral may carry.
+    func setDialEndpointRewriteForTesting(
+        _ rewrite: (@Sendable (PeerEndpoint) -> PeerEndpoint)?
+    ) {
+        dialEndpointRewrite = rewrite
+    }
+#endif
 }

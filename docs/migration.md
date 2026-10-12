@@ -19,8 +19,11 @@ Added:
 - `diagnostics`, the core's counters.
 - Two more library products, `IvyCore` and `IvySimulation`.
 
-Removed: the `DEBUG`/`IVY_TESTING` hooks (`…ForTesting`). They existed to force
-an interleaving; a test now states the interleaving as a sequence of events.
+Removed: the `DEBUG`/`IVY_TESTING` hooks (`…ForTesting`) that forced an
+interleaving; a test now states the interleaving as a sequence of events. One
+hook stays, `setDialEndpointRewriteForTesting`, because lattice-node's tests
+use it to run nodes that advertise routable addresses on one machine. It
+redirects the shell's dial and the core never sees it.
 
 ## Behaviour that differs
 

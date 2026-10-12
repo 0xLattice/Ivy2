@@ -1,7 +1,7 @@
 import Crypto
 import Foundation
 import XCTest
-import Ivy
+@testable import Ivy
 import Tally
 
 /// The thin end-to-end tier: the facade and the TCP shell over real sockets.
@@ -180,6 +180,25 @@ final class TCPIntegrationTests: XCTestCase {
         try await a.connect(to: await endpoint(b))
         let reconnected = await eventually { await b.connectedPeers == [a.localID] }
         XCTAssertTrue(reconnected)
+        await a.stop()
+        await b.stop()
+    }
+
+    func testDialRewriteRedirectsTheSocketNotTheIdentity() async throws {
+        let a = makeNode()
+        let b = makeNode()
+        try await a.start()
+        try await b.start()
+        let real = await endpoint(b)
+        await a.setDialEndpointRewriteForTesting { dialled in
+            dialled.host == "8.8.4.4"
+                ? PeerEndpoint(publicKey: dialled.publicKey, host: "127.0.0.1", port: dialled.port)
+                : dialled
+        }
+        // A routable address nobody listens on, redirected to the loopback listener.
+        try await a.connect(to: PeerEndpoint(publicKey: real.publicKey, host: "8.8.4.4", port: real.port))
+        let connected = await eventually { await b.connectedPeers == [a.localID] }
+        XCTAssertTrue(connected)
         await a.stop()
         await b.stop()
     }
