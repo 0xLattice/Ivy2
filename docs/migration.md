@@ -13,7 +13,8 @@ Volume, a bundle and a lookup.
 
 Replace the dependency. Every method and delegate callback of the `Ivy` actor
 keeps its name, signature and meaning, except the content selection ones
-removed below.
+removed below. `config`, `tally` and `localID` are isolated to the
+actor as before, so code that reads them with `await` builds unchanged.
 
 Added, matching 15.1.0: `TransportConnection`, `reserveInboundAdmission`,
 `accept(_:admission:)`, `connect(to:over:)` and `IvyError.streamHasNoObservedHost`.
