@@ -32,6 +32,14 @@ struct OutgoingDial: Sendable {
     var abandoned = false
 }
 
+/// A connection the shell established itself and handed to a connect
+/// operation, in place of one the core would have asked it to dial.
+struct SuppliedConnection: Sendable {
+    let connection: ConnectionID
+    let observedHost: String?
+    let localHost: String?
+}
+
 /// One attempt to reach a peer: each direct route in turn, then each carrier.
 struct ConnectOp: Sendable {
     enum Phase: Sendable {
@@ -58,6 +66,9 @@ struct ConnectOp: Sendable {
     let endpoint: PeerEndpoint
     /// Direct routes not yet tried.
     var routes: [PeerEndpoint]
+    /// Set when the caller supplied the connection: it is the only route,
+    /// and there is no falling back to a carrier.
+    var supplied: SuppliedConnection?
     var carriers: [PeerKey] = []
     var phase: Phase = .idle
 
@@ -85,9 +96,11 @@ extension IvyCore {
         to routes: [PeerEndpoint],
         role: AuthenticatedPeerRole,
         relayOnly: Bool,
-        waiter: ConnectWaiter
+        waiter: ConnectWaiter,
+        over supplied: SuppliedConnection? = nil
     ) -> OpID? {
         func refuse(_ error: IvyError, peer: PeerID?) -> OpID? {
+            if let supplied { emit(.close(supplied.connection)) }
             resolveConnectWaiter(waiter, .failed(error), peer: peer, role: role)
             return nil
         }
@@ -99,10 +112,14 @@ extension IvyCore {
         let allowed = role == .carrier ? config.isConfiguredCarrier(key) : config.allowsEndpoint(key)
         guard allowed else { return refuse(.peerOutsideMode, peer: key.peerID) }
         guard isRunning else { return refuse(.notRunning, peer: key.peerID) }
+        if let supplied, (supplied.observedHost ?? "").isEmpty {
+            return refuse(.streamHasNoObservedHost, peer: key.peerID)
+        }
 
         let id = makeID()
         connectOps[id] = ConnectOp(
-            id: id, key: key, role: role, waiter: waiter, endpoint: endpoint, routes: routes)
+            id: id, key: key, role: role, waiter: waiter, endpoint: endpoint, routes: routes,
+            supplied: supplied)
         if case .request(let request) = waiter { requests[request] = .connect(id) }
         if relayOnly {
             beginRelay(id)
@@ -124,7 +141,18 @@ extension IvyCore {
     private mutating func finishConnect(_ id: OpID, _ result: ConnectResult) {
         guard let op = connectOps.removeValue(forKey: id) else { return }
         if responderWaiters[op.key] == id { responderWaiters.removeValue(forKey: op.key) }
+        closeSuppliedConnectionUnlessSelected(op)
         resolveConnectWaiter(op.waiter, result, peer: op.peer, role: op.role, op: id)
+    }
+
+    /// A supplied connection is the caller's only as the peer's session.
+    private mutating func closeSuppliedConnectionUnlessSelected(_ op: ConnectOp) {
+        guard let supplied = op.supplied else { return }
+        if let link = linkByConnection[supplied.connection] {
+            if sessions[op.key]?.link != link { removeLink(link, notifyTransport: true) }
+        } else {
+            emit(.close(supplied.connection))
+        }
     }
 
     /// Ends an operation from outside (stop): its waiter hears `cancelled`.
@@ -174,7 +202,7 @@ extension IvyCore {
             let peer = op.peer
             guard !op.routes.isEmpty else {
                 // Every direct route failed.
-                if op.role == .carrier {
+                if op.role == .carrier || op.supplied != nil {
                     return finishConnect(id, .failed(.identityVerificationFailed))
                 }
                 guard config.mode.usesOverlayServices else {
@@ -192,30 +220,47 @@ extension IvyCore {
                 return finishConnect(id, .notAdmitted)
             }
             if hasSession { return finishConnect(id, .connected) }
-            guard reserveOutgoingDial(to: route, key: op.key, op: id) else {
+            guard let dial = reserveOutgoingDial(
+                to: route, key: op.key, op: id, dialling: op.supplied == nil) else {
                 if op.role == .carrier { continue }
                 return finishConnect(id, .notAdmitted)
             }
             connectOps[id]?.phase = .dialing
+            if let supplied = op.supplied {
+                // The shell already holds the connection: it stands in for
+                // the dial's answer. Its address is not one Ivy can dial, so
+                // it is kept out of the link's endpoint and so out of routing.
+                dialSucceeded(
+                    dial,
+                    connection: supplied.connection,
+                    observedHost: supplied.observedHost,
+                    localHost: supplied.localHost,
+                    linkEndpoint: PeerEndpoint(publicKey: op.key.hex, host: "unknown", port: 0))
+            }
             return
         }
     }
 
     /// Takes connection capacity for a dial and asks the shell to make it.
-    mutating func reserveOutgoingDial(to endpoint: PeerEndpoint, key: PeerKey, op: OpID?) -> Bool {
+    mutating func reserveOutgoingDial(
+        to endpoint: PeerEndpoint,
+        key: PeerKey,
+        op: OpID?,
+        dialling: Bool = true
+    ) -> DialID? {
         let peer = key.peerID
         guard sessions[key] == nil,
               outgoingDials[peer] == nil,
               responderWaiters[key] == nil,
               connectionCapacityUsed < config.maxConnections,
               directConnectionCount(inNetgroup: NetGroup.group(endpoint.host))
-                < config.maxConnectionsPerNetgroup else { return false }
+                < config.maxConnectionsPerNetgroup else { return nil }
         let dial = DialID(makeID())
         let canonical = PeerEndpoint(publicKey: key.hex, host: endpoint.host, port: endpoint.port)
         outgoingDials[peer] = OutgoingDial(endpoint: canonical, dial: dial, op: op)
         dialPeers[dial] = peer
-        emit(.dial(dial, canonical))
-        return true
+        if dialling { emit(.dial(dial, canonical)) }
+        return dial
     }
 
     mutating func dialFailed(_ dial: DialID) {
@@ -236,7 +281,8 @@ extension IvyCore {
         _ dial: DialID,
         connection: ConnectionID,
         observedHost: String?,
-        localHost: String?
+        localHost: String?,
+        linkEndpoint: PeerEndpoint? = nil
     ) {
         guard let peer = dialPeers[dial],
               var entry = outgoingDials[peer], entry.dial == dial,
@@ -251,7 +297,7 @@ extension IvyCore {
         }
         let link = makeLink(
             .direct(connection),
-            endpoint: entry.endpoint,
+            endpoint: linkEndpoint ?? entry.endpoint,
             observedHost: observedHost,
             localHost: localHost)
         entry.link = link
@@ -466,6 +512,7 @@ extension IvyCore {
     mutating func cancelConnectOp(_ id: OpID) {
         guard let op = connectOps.removeValue(forKey: id) else { return }
         if responderWaiters[op.key] == id { responderWaiters.removeValue(forKey: op.key) }
+        defer { closeSuppliedConnectionUnlessSelected(op) }
         switch op.phase {
         case .idle, .awaitingResponder:
             break

@@ -75,6 +75,14 @@ public enum ConnectionDirection: Sendable, Equatable {
 
 public enum Request: Sendable, Equatable {
     case connect(PeerEndpoint)
+    /// Connects to the peer over a connection the shell already holds and
+    /// has not yet reported, with this node as the initiator. The core
+    /// closes the connection unless it becomes the peer's session.
+    case connectOver(
+        PeerEndpoint,
+        ConnectionID,
+        observedHost: String?,
+        localHost: String?)
     case connectViaRelay(PeerEndpoint)
     case send(to: PeerID, topic: String, payload: Data)
     case sendOnSession(AuthenticatedPeer, topic: String, payload: Data)
@@ -191,6 +199,9 @@ public enum IvyError: Error, Sendable, Equatable {
     case connectionInProgress
     case identityVerificationFailed
     case noRelayAvailable
+    /// A supplied stream did not report the host its peer was observed at,
+    /// which netgroup admission keys on.
+    case streamHasNoObservedHost
 }
 
 // MARK: - Injected dependencies

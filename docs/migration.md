@@ -15,7 +15,11 @@ Replace the dependency. Every method and delegate callback of the `Ivy` actor
 keeps its name, signature and meaning, except the content selection ones
 removed below.
 
-Added:
+Added, matching 15.1.0: `TransportConnection`, `reserveInboundAdmission`,
+`accept(_:admission:)`, `connect(to:over:)` and `IvyError.streamHasNoObservedHost`.
+TCP now goes through the same protocol as a supplied stream.
+
+Also added:
 
 - `boundPort`, the port actually bound when `listenPort` is 0.
 - `diagnostics`, the core's counters.

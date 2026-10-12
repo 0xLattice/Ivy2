@@ -41,12 +41,29 @@ What the old implementation expressed with `await` is state in the core:
 | A task per served request | A serving state with an explicit phase; a granted slot advances it in the same step |
 | Run and operation generations | Nothing: a stopped run's state is gone, and a late event names an unknown identifier |
 
-The shell (`Ivy`, `TCPShell`, `STUNClient`) owns everything the core does not:
-TCP sockets, the single timer, STUN, calls into `IvyDelegate` and
-`IvyContentSource`, and the map from request to waiting caller. A transport
-needs four things to carry Ivy: ordered bytes in, ordered bytes out, a way to
-stop and resume reads, and a signal that what was written has drained. TCP is
-the one supplied; the core knows nothing about it.
+The shell (`Ivy`, `StreamShell`, `STUNClient`) owns everything the core does
+not: connections, the single timer, STUN, calls into `IvyDelegate` and
+`IvyContentSource`, and the map from request to waiting caller.
+
+## Transports
+
+A connection is a `TransportConnection`: an ordered, reliable byte stream that
+delivers bytes only when asked, says whether it has room for more, and reports
+its close once. Framing, byte budgets, admission, the handshake and sessions
+are all above it and the same for every stream. TCP is one supplier
+(`TCPStream`) and takes the same path as any other.
+
+Whoever establishes a stream hands it to Ivy:
+
+- inbound, `reserveInboundAdmission(observedHost:)` then `accept(_:admission:)`.
+  The lease is taken before anything is spent on the peer, admits one stream of
+  the netgroup it was reserved for, and belongs to the run that issued it.
+- outbound, `connect(to:over:)`. The stream is closed unless it becomes the
+  peer's session, and there is no falling back to another route or a carrier.
+
+A stream must report the host its peer was observed at: netgroup admission
+keys on it. Its address is not one Ivy can dial, so it is kept out of routing
+unless the peer advertises a listen address of its own.
 
 Signatures, traffic evidence and randomness are injected (`IvySignatureScheme`,
 `PeerLedger`, `CoreRandom`). Production uses Ed25519, Tally and the system
