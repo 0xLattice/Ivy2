@@ -252,6 +252,36 @@ public final class Simulation {
         return id
     }
 
+    /// Joins two nodes with a connection neither dialled, as a transport
+    /// that establishes its own streams would: `b` is told of it as inbound,
+    /// and `a` is asked to connect to `b` over it. `observedHost` overrides
+    /// the host `a` is told its peer was observed at.
+    @discardableResult
+    public func requestConnectOver(
+        from a: Node,
+        to b: Node,
+        observedHost: String?? = nil
+    ) -> (request: RequestID, connection: ConnectionID) {
+        nextPipe += 1
+        let near = makeConnectionID()
+        let far = makeConnectionID()
+        a.connections[near] = Endpoint(pipe: nextPipe, remoteNode: b.id, remoteConnection: far)
+        b.connections[far] = Endpoint(pipe: nextPipe, remoteNode: a.id, remoteConnection: near)
+        apply(
+            .connectionOpened(far, direction: .inbound, observedHost: a.host, localHost: b.host),
+            to: b)
+        let id = request(
+            .connectOver(
+                b.endpoint, near, observedHost: observedHost ?? b.host, localHost: a.host),
+            on: a)
+        return (id, near)
+    }
+
+    /// Whether the node still holds its end of `connection`.
+    public func isOpen(_ connection: ConnectionID, at node: Node) -> Bool {
+        node.connections[connection] != nil
+    }
+
     public func cancel(_ request: RequestID, on node: Node) {
         apply(.cancel(request), to: node)
     }

@@ -35,7 +35,8 @@ public actor Ivy {
     private let group: EventLoopGroup
     private let clock = ContinuousClock()
     private let origin: ContinuousClock.Instant
-    private nonisolated let shell: TCPShell
+    private nonisolated let streams: StreamShell
+    private nonisolated let tcp: TCPTransport
     private let stunClient: STUNClient
 
     private var driver: Task<Void, Never>?
@@ -67,11 +68,12 @@ public actor Ivy {
         // order for the driver, which is the only thing that steps the core
         // on their behalf.
         let (events, continuation) = AsyncStream<Event>.makeStream()
-        self.shell = TCPShell(
-            group: group,
-            maxUnseenInbound: config.maxConnections,
-            maxUnseenPerNetgroup: config.maxConnectionsPerNetgroup,
+        let streams = StreamShell(
+            maxInbound: config.maxConnections,
+            maxInboundPerNetgroup: config.maxConnectionsPerNetgroup,
             post: { continuation.yield($0) })
+        self.streams = streams
+        self.tcp = TCPTransport(group: group, shell: streams)
         Task { await self.runDriver(events) }
     }
 
@@ -81,7 +83,8 @@ public actor Ivy {
         addressDiscovery?.cancel()
         for task in jobTasks.values { task.cancel() }
         for waiter in waiters.values { waiter.resume(returning: .flag(false)) }
-        shell.closeAll()
+        tcp.closeListener()
+        streams.closeAll()
     }
 
     private func runDriver(_ events: AsyncStream<Event>) {
@@ -95,7 +98,7 @@ public actor Ivy {
 
     private func applyFromTransport(_ event: Event) {
         apply(event)
-        shell.processed(event)
+        streams.processed(event)
     }
 
     // MARK: - Stepping the core
@@ -114,18 +117,18 @@ public actor Ivy {
         switch effect {
         case .dial(let dial, let endpoint):
 #if DEBUG || IVY_TESTING
-            shell.dial(dial, dialEndpointRewrite?(endpoint) ?? endpoint)
+            tcp.dial(dial, dialEndpointRewrite?(endpoint) ?? endpoint)
 #else
-            shell.dial(dial, endpoint)
+            tcp.dial(dial, endpoint)
 #endif
         case .write(let connection, let bytes):
-            shell.write(connection, bytes)
+            streams.write(connection, bytes)
         case .close(let connection):
-            shell.close(connection)
+            streams.close(connection)
         case .pauseReading(let connection):
-            shell.setReading(connection, false)
+            streams.setReading(connection, false)
         case .resumeReading(let connection):
-            shell.setReading(connection, true)
+            streams.setReading(connection, true)
 
         case .deliver(let token, let peer, let message):
             Task { [weak self] in
@@ -240,7 +243,13 @@ public actor Ivy {
     private func startNow() async throws {
         guard !listening else { return }
         try config.validate()
-        try await shell.listen(port: config.listenPort)
+        streams.openGate()
+        do {
+            try await tcp.listen(port: config.listenPort)
+        } catch {
+            streams.closeGate()
+            throw error
+        }
         listening = true
         apply(.start)
     }
@@ -264,12 +273,58 @@ public actor Ivy {
         for task in jobTasks.values { task.cancel() }
         guard listening else { return }
         listening = false
-        await shell.stopListening()
+        streams.closeGate()
+        await tcp.stopListening()
     }
 
     /// The port the listener is bound to; differs from `config.listenPort`
     /// only when that is 0.
-    public var boundPort: UInt16? { shell.boundPort }
+    public var boundPort: UInt16? { tcp.boundPort }
+
+    // MARK: - Supplied streams
+
+    /// Reserves inbound admission for a peer observed at `observedHost`, or
+    /// returns nil when the node is not accepting it. A supplier of inbound
+    /// streams calls this before it spends anything on the peer, then hands
+    /// the stream to `accept(_:admission:)`. `observedHost` must be the host
+    /// the stream will report: the lease admits only a stream of the netgroup
+    /// it was reserved for. A peer with no observed host is not admitted.
+    public nonisolated func reserveInboundAdmission(
+        observedHost: String?
+    ) -> InboundAdmissionLease? {
+        guard let observedHost, !observedHost.isEmpty else { return nil }
+        return streams.reserve(observedHost: observedHost)
+    }
+
+    /// Accepts a stream the caller established, with this node as the
+    /// responder. Nothing is requested from the stream until the node has
+    /// admitted it. Refusal is reported only by closing the stream.
+    public nonisolated func accept(
+        _ stream: any TransportConnection,
+        admission: InboundAdmissionLease
+    ) {
+        guard let host = stream.observedHost, !host.isEmpty else {
+            admission.release()
+            stream.close()
+            return
+        }
+        streams.accept(stream, admission: admission)
+    }
+
+    /// Connects to `endpoint` over a stream the caller established, with this
+    /// node as the initiator. The stream is closed unless it becomes the
+    /// peer's session, and it must report the host its peer was observed at.
+    public func connect(
+        to endpoint: PeerEndpoint,
+        over stream: any TransportConnection
+    ) async throws {
+        let connection = streams.hold(stream)
+        try Self.unwrap(await self.await(.connectOver(
+            endpoint,
+            connection,
+            observedHost: stream.observedHost,
+            localHost: stream.localHost)))
+    }
 
     // MARK: - Peers
 

@@ -374,6 +374,22 @@ public struct IvyCore: Sendable {
             }
             reconnectSuppressed.remove(key.peerID)
             startConnect(to: [endpoint], role: .endpoint, relayOnly: false, waiter: .request(id))
+        case let .connectOver(endpoint, connection, observedHost, localHost):
+            guard linkByConnection[connection] == nil else {
+                return complete(id, .connect(.failed(.connectionInProgress)))
+            }
+            guard let key = try? PeerKey(endpoint.publicKey) else {
+                emit(.close(connection))
+                return complete(id, .connect(.failed(.invalidPeerKey)))
+            }
+            reconnectSuppressed.remove(key.peerID)
+            startConnect(
+                to: [endpoint],
+                role: .endpoint,
+                relayOnly: false,
+                waiter: .request(id),
+                over: SuppliedConnection(
+                    connection: connection, observedHost: observedHost, localHost: localHost))
         case .connectViaRelay(let endpoint):
             guard let key = try? PeerKey(endpoint.publicKey) else {
                 return complete(id, .connect(.failed(.invalidPeerKey)))
