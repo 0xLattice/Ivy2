@@ -11,7 +11,7 @@ final class TCPIntegrationTests: XCTestCase {
         requestTimeout: Duration = .seconds(15),
         maxInboundBufferedBytes: Int = IvyConfig.defaultMaxInboundBufferedBytes
     ) -> Ivy {
-        Ivy(config: IvyConfig(
+        Ivy.forTesting(IvyConfig(
             signingKey: Curve25519.Signing.PrivateKey(),
             listenPort: 0,
             requestTimeout: requestTimeout,
@@ -23,7 +23,7 @@ final class TCPIntegrationTests: XCTestCase {
 
     private func endpoint(_ node: Ivy) async -> PeerEndpoint {
         let port = await node.boundPort
-        return PeerEndpoint(publicKey: node.config.publicKey, host: "127.0.0.1", port: port ?? 0)
+        return PeerEndpoint(publicKey: node.publicKey, host: "127.0.0.1", port: port ?? 0)
     }
 
     private func eventually(
@@ -47,20 +47,20 @@ final class TCPIntegrationTests: XCTestCase {
         try await b.start()
         try await a.connect(to: await endpoint(b))
 
-        let connected = await eventually { await b.connectedPeers == [a.localID] }
+        let connected = await eventually { await b.connectedPeers == [a.id] }
         XCTAssertTrue(connected)
-        let sent = await a.sendMessage(to: b.localID, topic: "t", payload: Data("hi".utf8))
-        XCTAssertEqual(sent, .enqueued(endpoint: b.localID, route: .direct))
+        let sent = await a.sendMessage(to: b.id, topic: "t", payload: Data("hi".utf8))
+        XCTAssertEqual(sent, .enqueued(endpoint: b.id, route: .direct))
         let delivered = await eventually { await recorder.messages.count == 1 }
         XCTAssertTrue(delivered)
         let message = await recorder.messages.first
         XCTAssertEqual(message?.1, PeerMessage(topic: "t", payload: Data("hi".utf8)))
-        XCTAssertEqual(message?.0.id, a.localID)
+        XCTAssertEqual(message?.0.id, a.id)
         let connects = await recorder.connects
-        XCTAssertEqual(connects.map(\.id), [a.localID])
+        XCTAssertEqual(connects.map(\.id), [a.id])
 
-        await a.disconnect(b.localID)
-        let gone = await eventually { await recorder.disconnects == [a.localID] }
+        await a.disconnect(b.id)
+        let gone = await eventually { await recorder.disconnects == [a.id] }
         XCTAssertTrue(gone)
         await a.stop()
         await b.stop()
@@ -78,7 +78,7 @@ final class TCPIntegrationTests: XCTestCase {
 
         let response = await a.fetchVolume(rootCID: "root")
         XCTAssertEqual(response.entries, ["root": Data("r".utf8), "leaf": Data("l".utf8)])
-        XCTAssertEqual(response.servedBy, b.localID)
+        XCTAssertEqual(response.servedBy, b.id)
         let missing = await a.fetchVolume(rootCID: "absent")
         XCTAssertEqual(missing, .empty)
         await a.stop()
@@ -99,7 +99,7 @@ final class TCPIntegrationTests: XCTestCase {
         let response = await a.fetchVolume(rootCID: "vol")
         XCTAssertEqual(response.entries.count, entries.count)
         XCTAssertEqual(response.entries["vol-23"], entries[24].data)
-        XCTAssertEqual(response.servedBy, b.localID)
+        XCTAssertEqual(response.servedBy, b.id)
 
         let settled = await eventually {
             let serving = await b.diagnostics
@@ -127,14 +127,14 @@ final class TCPIntegrationTests: XCTestCase {
         let payload = Data(repeating: 7, count: 512 * 1024)
         var enqueued = 0
         fill: for _ in 0..<400 {
-            switch await a.sendMessage(to: b.localID, topic: "bulk", payload: payload) {
+            switch await a.sendMessage(to: b.id, topic: "bulk", payload: payload) {
             case .enqueued:
                 enqueued += 1
             case .backpressured:
                 // A pipe that is full because the far side stopped reading
                 // does not become writable.
                 let writable = await withTaskGroup(of: Bool.self) { group in
-                    group.addTask { await a.waitUntilWritable(to: b.localID) }
+                    group.addTask { await a.waitUntilWritable(to: b.id) }
                     group.addTask {
                         try? await Task.sleep(nanoseconds: 300_000_000)
                         return false
@@ -175,12 +175,12 @@ final class TCPIntegrationTests: XCTestCase {
         await a.stop()
         let afterStop = await a.connectedPeers
         XCTAssertEqual(afterStop, [])
-        let refused = await a.sendMessage(to: b.localID, topic: "t", payload: Data())
+        let refused = await a.sendMessage(to: b.id, topic: "t", payload: Data())
         XCTAssertEqual(refused, .notConnected)
 
         try await a.start()
         try await a.connect(to: await endpoint(b))
-        let reconnected = await eventually { await b.connectedPeers == [a.localID] }
+        let reconnected = await eventually { await b.connectedPeers == [a.id] }
         XCTAssertTrue(reconnected)
         await a.stop()
         await b.stop()
@@ -200,7 +200,7 @@ final class TCPIntegrationTests: XCTestCase {
         }
         // A routable address nobody listens on, redirected to the loopback listener.
         try await a.connect(to: PeerEndpoint(publicKey: real.publicKey, host: "8.8.4.4", port: real.port))
-        let connected = await eventually { await b.connectedPeers == [a.localID] }
+        let connected = await eventually { await b.connectedPeers == [a.id] }
         XCTAssertTrue(connected)
         await a.stop()
         await b.stop()

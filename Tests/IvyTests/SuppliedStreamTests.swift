@@ -8,7 +8,7 @@ import Tally
 /// any other transport takes. No socket carries these sessions.
 final class SuppliedStreamTests: XCTestCase {
     private func makeNode(maxConnectionsPerNetgroup: Int = 16) -> Ivy {
-        Ivy(config: IvyConfig(
+        Ivy.forTesting(IvyConfig(
             signingKey: Curve25519.Signing.PrivateKey(),
             listenPort: 0,
             stunServers: [],
@@ -17,7 +17,7 @@ final class SuppliedStreamTests: XCTestCase {
     }
 
     private func endpoint(_ node: Ivy, host: String) -> PeerEndpoint {
-        PeerEndpoint(publicKey: node.config.publicKey, host: host, port: 4001)
+        PeerEndpoint(publicKey: node.publicKey, host: host, port: 4001)
     }
 
     private func eventually(
@@ -53,16 +53,16 @@ final class SuppliedStreamTests: XCTestCase {
         try await b.start()
         let (left, right) = try await join(a, b)
 
-        let connected = await eventually { await b.connectedPeers == [a.localID] }
+        let connected = await eventually { await b.connectedPeers == [a.id] }
         XCTAssertTrue(connected)
         let peers = await a.connectedPeers
-        XCTAssertEqual(peers, [b.localID])
+        XCTAssertEqual(peers, [b.id])
         // A supplied stream's address is not one Ivy can dial.
         let known = await a.knownPeerEndpoints
         XCTAssertEqual(known, [])
 
-        let sent = await a.sendMessage(to: b.localID, topic: "t", payload: Data("over a stream".utf8))
-        XCTAssertEqual(sent, .enqueued(endpoint: b.localID, route: .direct))
+        let sent = await a.sendMessage(to: b.id, topic: "t", payload: Data("over a stream".utf8))
+        XCTAssertEqual(sent, .enqueued(endpoint: b.id, route: .direct))
         let delivered = await eventually { await recorder.messages.count == 1 }
         XCTAssertTrue(delivered)
 
@@ -71,10 +71,10 @@ final class SuppliedStreamTests: XCTestCase {
         let volume = await a.fetchVolume(rootCID: "vol")
         XCTAssertEqual(volume.entries.count, entries.count)
         XCTAssertEqual(volume.entries["vol-11"], entries[12].data)
-        XCTAssertEqual(volume.servedBy, b.localID)
+        XCTAssertEqual(volume.servedBy, b.id)
         XCTAssertGreaterThan(right.timesSaturated, 0, "the serving side must have been held back")
 
-        await a.disconnect(b.localID)
+        await a.disconnect(b.id)
         let closed = await eventually { left.isClosed && right.isClosed }
         XCTAssertTrue(closed)
         await a.stop()
@@ -95,9 +95,9 @@ final class SuppliedStreamTests: XCTestCase {
             // Past the write high-water mark a send is refused until the
             // stream reports room, as on any transport.
             while await a.sendMessage(
-                to: b.localID, topic: "t\(index)", payload: Data(repeating: 1, count: 2_000)
+                to: b.id, topic: "t\(index)", payload: Data(repeating: 1, count: 2_000)
             ) == .backpressured {
-                _ = await a.waitUntilWritable(to: b.localID)
+                _ = await a.waitUntilWritable(to: b.id)
             }
         }
         let parked = await eventually { await recorder.entered == 1 }
@@ -245,7 +245,7 @@ final class SuppliedStreamTests: XCTestCase {
         XCTAssertFalse(left.isClosed, "the session's own stream stays")
         _ = spareFar
         let peers = await a.connectedPeers
-        XCTAssertEqual(peers, [b.localID])
+        XCTAssertEqual(peers, [b.id])
         await a.stop()
         await b.stop()
     }

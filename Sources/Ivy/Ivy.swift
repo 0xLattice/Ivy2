@@ -19,9 +19,9 @@ struct TallyLedger: PeerLedger {
 /// maps each request to the caller waiting for it. Every decision is the
 /// core's; this type only carries events in and effects out.
 public actor Ivy {
-    public nonisolated let config: IvyConfig
-    public nonisolated let tally: Tally
-    public nonisolated let localID: PeerID
+    public let config: IvyConfig
+    public let tally: Tally
+    public let localID: PeerID
 
     public weak var delegate: IvyDelegate?
 
