@@ -86,7 +86,6 @@ public final class Simulation {
         public internal(set) var core: IvyCore
         public let ledger: SimulatedLedger
 
-        public var content: [String: Data] = [:]
         public var volumes: [String: [ContentEntry]] = [:]
         public var bundles: [String: [String]] = [:]
         /// Answers `authorize` jobs; everyone is authorized by default.
@@ -520,15 +519,10 @@ public final class Simulation {
 
     private func answer(_ job: Job, on node: Node) -> JobResult {
         switch job {
-        case .readContent(_, let cids, _):
-            let entries = cids.compactMap { cid in node.content[cid].map { ContentEntry(cid: cid, data: $0) } }
-            return .entries(entries.count == cids.count ? entries : [])
         case .readVolume(let rootCID, _):
             return .entries(node.volumes[rootCID] ?? [])
         case .readVolumeBundle(let rootCID):
             return .roots(node.bundles[rootCID] ?? [])
-        case .authorizeContent(let peer, let rootCID, _):
-            return .authorized(node.authorize(peer, rootCID))
         case .authorizeVolume(let peer, let rootCID):
             return .authorized(node.authorize(peer, rootCID))
         }
@@ -619,8 +613,6 @@ public final class Simulation {
                 + "fail:\(String(describing: volume.failure))"
         }
         switch result {
-        case .content(let response):
-            return "content[\(entries(response.entries))]by:\(response.servedBy?.publicKey ?? "-")"
         case .volume(let response):
             return "volume " + volume(response)
         case .volumeBundle(let response):

@@ -133,7 +133,7 @@ final class RoutingRefreshAndModeTests: XCTestCase {
             rootCID: "root", requestID: 2, records: [ProviderRecord(endpoint: other, expiresAt: expiry)]))
         peer.send(.announceProvider(rootCID: "root", expiresAt: expiry))
         peer.send(.relayOpen(routeID: Data(repeating: 7, count: 32), targetKey: sim.discoveryKey(index: 1)))
-        peer.send(.contentRequest(requestID: 3, rootCID: "root", cids: []))
+        peer.send(.volumeRequest(requestID: 3, rootCID: "root"))
         sim.run(for: .seconds(1))
 
         peer.poll()
@@ -189,10 +189,11 @@ final class RoutingRefreshAndModeTests: XCTestCase {
         let sim = Simulation()
         let node = sim.discoveryNode(mode: .privateNetwork, privateContentExchangeEnabled: true)
         let server = sim.discoveryNode(mode: .privateNetwork, privateContentExchangeEnabled: true)
-        server.content = ["root": Data("r".utf8)]
+        server.volumes["root"] = [ContentEntry(cid: "root", data: Data("r".utf8))]
         sim.connect(node, server)
 
-        let response = sim.await(.fetchContent(rootCID: "root", cids: []), on: node)?.content
+        let response = sim.await(
+            .fetchVolume(rootCID: "root", maximumArchiveBytes: .max, maximumEntries: .max), on: node)?.volume
         XCTAssertEqual(response?.entries, ["root": Data("r".utf8)])
         XCTAssertEqual(response?.servedBy, server.peer)
         XCTAssertEqual(node.core.freshProviderQueryCount, 0)

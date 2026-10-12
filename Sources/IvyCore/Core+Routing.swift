@@ -49,7 +49,7 @@ extension IvyCore {
             switch message {
             case .ping, .pong, .peerMessage:
                 break
-            case .contentRequest, .contentResponse, .contentUnavailable,
+            case .contentUnavailable,
                  .volumeRequest, .volumeChunk, .volumeBundleRequest, .volumeBundleEnd:
                 guard config.privateContentExchangeEnabled else { return }
             default:
@@ -81,13 +81,6 @@ extension IvyCore {
                     port: endpoint.port))
             }
             resolveNeighborResponse(nonce: nonce, endpoints: accepted)
-
-        case .contentRequest(let requestID, let rootCID, let cids):
-            beginContentRequest(requestID: requestID, rootCID: rootCID, cids: cids, from: ref)
-
-        case .contentResponse(let requestID, let entries):
-            handleContentResponse(
-                requestID: requestID, entries: entries, from: peer, sessionID: sessionID)
 
         case .contentUnavailable(let requestID):
             handleContentUnavailable(requestID: requestID, from: peer, sessionID: sessionID)
@@ -140,10 +133,6 @@ extension IvyCore {
         volumeTimeoutStreaks[peer] = nil
         for request in serving.keys.filter({ $0.peer == peer }).sorted(by: Self.servingOrder) {
             cancelServing(request)
-        }
-        for requestID in pendingContentRequests.keys.sorted()
-            where pendingContentRequests[requestID]?.candidates.contains(peer) == true {
-            markContentCandidateDone(requestID: requestID, peer: peer)
         }
         for requestID in pendingVolumeRequests.keys.sorted()
             where pendingVolumeRequests[requestID]?.candidateSessions[peer] != nil {

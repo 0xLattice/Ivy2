@@ -6,8 +6,8 @@ import Tally
 
 /// The property the rewrite exists for: the same events give the same effects.
 final class DeterminismTests: XCTestCase {
-    /// A busy network: bootstrap, lookups, announcements, content and Volume
-    /// fetches, churn and a partition, all on one seed.
+    /// A busy network: bootstrap, lookups, announcements, Volume fetches of
+    /// announced and unannounced roots, churn and a partition, all on one seed.
     private func runScenario(seed: UInt64) -> (digest: String, effects: Int, served: Int) {
         let sim = Simulation(seed: seed)
         let seedNode = sim.node(health: PeerHealthConfig(
@@ -21,7 +21,7 @@ final class DeterminismTests: XCTestCase {
         sim.run(for: .seconds(5))
 
         for (index, node) in nodes.enumerated() where index % 3 == 0 {
-            node.content["root-\(index)"] = Data(repeating: UInt8(index), count: 2_000)
+            node.volumes["root-\(index)"] = volumeEntries(root: "root-\(index)", members: 2, bytesEach: 2_000)
             node.volumes["vol-\(index)"] = volumeEntries(root: "vol-\(index)", members: 6, bytesEach: 30_000)
             sim.send(.command(.announceProvider(
                 rootCID: "vol-\(index)", expiresAt: sim.unixSeconds + 3_600)), to: node)
@@ -37,7 +37,8 @@ final class DeterminismTests: XCTestCase {
             let source = (index - 1)
             fetches.append((node, sim.request(.fetchVolume(
                 rootCID: "vol-\(source)", maximumArchiveBytes: .max, maximumEntries: .max), on: node)))
-            fetches.append((node, sim.request(.fetchContent(rootCID: "root-\(source)", cids: []), on: node)))
+            fetches.append((node, sim.request(.fetchVolume(
+                rootCID: "root-\(source)", maximumArchiveBytes: .max, maximumEntries: .max), on: node)))
         }
         sim.run(for: .seconds(20))
 
@@ -52,7 +53,6 @@ final class DeterminismTests: XCTestCase {
         let served = fetches.filter { node, request in
             switch sim.result(of: request, on: node) {
             case .volume(let response)?: return !response.entries.isEmpty
-            case .content(let response)?: return !response.entries.isEmpty
             default: return false
             }
         }.count
@@ -109,7 +109,7 @@ final class DeterminismTests: XCTestCase {
             (.connectionOpened(ConnectionID(7), direction: .inbound, observedHost: "8.9.0.1", localHost: "8.1.0.1"), at(3)),
             (.received(ConnectionID(7), Data([0, 0, 0, 5, 1, 2, 3, 4, 5])), at(4)),
             (.request(RequestID(1), .findNode(target: "abc")), at(5)),
-            (.request(RequestID(2), .fetchContent(rootCID: "root", cids: [])), at(6)),
+            (.request(RequestID(2), .fetchVolume(rootCID: "root", maximumArchiveBytes: 1_000, maximumEntries: 10)), at(6)),
             (.tick, at(40)),
             (.stop, at(41)),
         ]

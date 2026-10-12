@@ -169,14 +169,6 @@ final class FetchRawPeer {
         return nil
     }
 
-    /// The oldest content request the node sent and the test has not taken.
-    func takeContentRequest() -> (requestID: UInt64, rootCID: String, cids: [String])? {
-        takeFirst {
-            if case let .contentRequest(requestID, rootCID, cids) = $0 { return (requestID, rootCID, cids) }
-            return nil
-        }
-    }
-
     /// The oldest Volume or bundle request the node sent.
     func takeVolumeRequest() -> (requestID: UInt64, rootCID: String, bundle: Bool)? {
         takeFirst {
@@ -200,22 +192,6 @@ final class FetchRawPeer {
             if case let .findProviders(rootCID, requestID) = $0 { return (requestID, rootCID) }
             return nil
         }
-    }
-
-    /// The content replies (`contentResponse`, `contentUnavailable`) the
-    /// node sent, as (requestID, entries or nil).
-    func takeContentReplies() -> [(requestID: UInt64, entries: [ContentEntry]?)] {
-        var replies: [(UInt64, [ContentEntry]?)] = []
-        while let reply: (UInt64, [ContentEntry]?) = takeFirst({
-            switch $0 {
-            case let .contentResponse(requestID, entries): return (requestID, entries)
-            case let .contentUnavailable(requestID): return (requestID, nil)
-            default: return nil
-            }
-        }) {
-            replies.append(reply)
-        }
-        return replies
     }
 
     /// Sends `root`'s Volume: whole, or only the first `prefix` bytes of its
@@ -284,24 +260,9 @@ extension Simulation {
     func settleDue() {
         run(for: .zero)
     }
-
-    /// Answers the node's unanswered jobs by hand; for a node whose
-    /// `stallsStorage` is set, so a test can return what a real source never would.
-    func answerJobsByHand(on node: Node, from start: Int = 0, _ answer: (Job) -> JobResult?) {
-        for (id, job) in node.startedJobs.dropFirst(start) {
-            if let result = answer(job) { send(.jobFinished(id, result), to: node) }
-        }
-    }
 }
 
 extension Simulation.Node {
-    var contentReadsStarted: [(rootCID: String, cids: [String], maxDataBytes: Int)] {
-        startedJobs.compactMap {
-            if case let .readContent(rootCID, cids, maxDataBytes) = $0.job { return (rootCID, cids, maxDataBytes) }
-            return nil
-        }
-    }
-
     var volumeReadsStarted: [String] {
         startedJobs.compactMap {
             if case .readVolume(let rootCID, _) = $0.job { return rootCID }
@@ -311,10 +272,8 @@ extension Simulation.Node {
 
     var authorizationsStarted: Int {
         startedJobs.filter {
-            switch $0.job {
-            case .authorizeContent, .authorizeVolume: return true
-            default: return false
-            }
+            if case .authorizeVolume = $0.job { return true }
+            return false
         }.count
     }
 }

@@ -7,6 +7,13 @@ import Tally
 /// Provider discovery as a fetch and a caller see it: ported from 15.0.1's
 /// ProviderRefreshTests.
 final class ProviderRefreshTests: XCTestCase {
+    private func volume(_ root: String) -> Request {
+        .fetchVolume(
+            rootCID: root,
+            maximumArchiveBytes: MessageLimits.maxVolumeArchiveBytes,
+            maximumEntries: Int(MessageLimits.maxVolumeEntryCount))
+    }
+
     private func record(_ endpoint: PeerEndpoint, _ expiresAt: UInt64) -> ProviderRecord {
         ProviderRecord(endpoint: endpoint, expiresAt: expiresAt)
     }
@@ -124,43 +131,36 @@ final class ProviderRefreshTests: XCTestCase {
     }
 
     /// "a failed cached hint triggers fresh discovery without deleting the hint"
+    ///
+    /// A Volume fetch asks the peers already connected before it looks
+    /// anything up, so the live provider is one the requester has no session with.
     func testStaleHintFallsBackToFreshQuery() {
         let sim = Simulation()
-        let requester = sim.discoveryNode(maxContentCandidates: 1)
+        let requester = sim.discoveryNode()
         let router = sim.node()
         let provider = sim.node()
         let root = "provider-refresh-root"
-        provider.content = [root: Data("fresh provider".utf8)]
+        provider.volumes[root] = [ContentEntry(cid: root, data: Data("fresh provider".utf8))]
         sim.connect(requester, router)
         sim.connect(provider, router)
 
         let expiry = sim.unixSeconds + 60
         sim.send(.command(.announceProvider(rootCID: root, expiresAt: expiry)), to: provider)
         XCTAssertTrue(sim.run(until: { router.core.providers(for: root).contains(provider.peer) }, timeout: .seconds(1)))
-        router.core.storeProviderHint(
-            rootCID: root,
-            peer: provider.peer,
-            endpoint: PeerEndpoint(publicKey: provider.key.hex, host: "8.8.8.8", port: 4001),
-            expiresAt: expiry)
-        sim.connect(requester, provider)
 
-        // A provider nobody can reach, sorting ahead of the live one as in the reference.
-        guard let staleEndpoint = (0..<64).lazy
-            .map({ sim.discoveryUnreachableEndpoint(index: $0) })
-            .first(where: { $0.publicKey < provider.key.hex }) else {
-            return XCTFail("no stale identity sorts first")
-        }
+        // A provider nobody can reach.
+        let staleEndpoint = sim.discoveryUnreachableEndpoint(index: 0)
         let staleID = PeerID(publicKey: staleEndpoint.publicKey)
         requester.core.storeProviderHint(rootCID: root, peer: staleID, endpoint: staleEndpoint, expiresAt: expiry)
         router.core.storeProviderHint(rootCID: root, peer: staleID, endpoint: staleEndpoint, expiresAt: expiry)
 
-        let response = sim.await(.fetchContent(rootCID: root, cids: []), on: requester)?.content
+        let response = sim.await(volume(root), on: requester)?.volume
 
         XCTAssertEqual(response?.entries, [root: Data("fresh provider".utf8)])
         XCTAssertEqual(response?.servedBy, provider.peer)
         XCTAssertTrue(requester.core.providers(for: root).contains(staleID))
         XCTAssertEqual(requester.core.freshProviderQueryCount, 1)
-        XCTAssertEqual(requester.core.diagnostics.activeFetches, 0)
+        XCTAssertTrue(requester.core.volumeFetches.isEmpty)
     }
 
     /// "a connected unavailable hint cannot suppress fresh discovery"
@@ -172,7 +172,7 @@ final class ProviderRefreshTests: XCTestCase {
         let provider = sim.node()
         let root = "provider-connected-root"
         stale.stallsStorage = true
-        provider.content = [root: Data("fresh after unavailable".utf8)]
+        provider.volumes[root] = [ContentEntry(cid: root, data: Data("fresh after unavailable".utf8))]
         sim.connect(requester, router)
         sim.connect(requester, stale)
         sim.connect(provider, router)
@@ -180,73 +180,19 @@ final class ProviderRefreshTests: XCTestCase {
         let expiry = sim.unixSeconds + 60
         sim.send(.command(.announceProvider(rootCID: root, expiresAt: expiry)), to: provider)
         XCTAssertTrue(sim.run(until: { router.core.providers(for: root).contains(provider.peer) }, timeout: .seconds(1)))
-        router.core.storeProviderHint(
-            rootCID: root,
-            peer: provider.peer,
-            endpoint: PeerEndpoint(publicKey: provider.key.hex, host: "8.8.8.8", port: 4001),
-            expiresAt: expiry)
-        sim.connect(requester, provider)
         requester.core.storeProviderHint(
             rootCID: root, peer: stale.peer, endpoint: stale.endpoint, expiresAt: expiry)
 
-        let first = sim.request(.fetchContent(rootCID: root, cids: []), on: requester)
+        let fetch = sim.request(volume(root), on: requester)
         XCTAssertTrue(sim.run(until: { stale.startedJobs.count == 1 }, timeout: .seconds(1)))
-        let second = sim.request(.fetchContent(rootCID: root, cids: []), on: requester)
-        XCTAssertEqual(requester.core.pendingFetches.first?.value.waiters.count, 2)
         XCTAssertEqual(requester.core.freshProviderQueryCount, 0)
         sim.releaseStorage(stale)
 
-        XCTAssertTrue(sim.run(until: {
-            sim.result(of: first, on: requester) != nil && sim.result(of: second, on: requester) != nil
-        }, timeout: .seconds(5)))
-        for request in [first, second] {
-            let response = sim.result(of: request, on: requester)?.content
-            XCTAssertEqual(response?.entries, [root: Data("fresh after unavailable".utf8)])
-            XCTAssertEqual(response?.servedBy, provider.peer)
-        }
-        XCTAssertEqual(requester.core.freshProviderQueryCount, 1, "both callers share one fresh query")
-    }
-
-    /// "fresh discovery can retry an identity whose transport was replaced"
-    func testReplacementSessionIsRetried() {
-        let sim = Simulation()
-        let requester = sim.node()
-        let router = sim.node()
-        let provider = sim.node()
-        let root = "provider-retry-root"
-        let payload = Data("served after reconnect".utf8)
-        provider.content = [root: payload]
-        sim.connect(provider, router)
-        sim.connect(requester, router)
-        sim.connect(requester, provider)
-        let expiry = sim.unixSeconds + 60
-        router.core.storeProviderHint(
-            rootCID: root, peer: provider.peer, endpoint: provider.endpoint, expiresAt: expiry)
-        requester.core.storeProviderHint(
-            rootCID: root, peer: provider.peer, endpoint: provider.endpoint, expiresAt: expiry)
-
-        // The provider's first call for the request never comes back.
-        provider.stallsStorage = true
-        let fetch = sim.request(.fetchContent(rootCID: root, cids: []), on: requester)
-        XCTAssertTrue(sim.run(until: { provider.startedJobs.count == 1 }, timeout: .seconds(1)))
-        provider.stallsStorage = false
-        sim.send(.command(.disconnect(requester.peer)), to: provider)
-
         XCTAssertTrue(sim.run(until: { sim.result(of: fetch, on: requester) != nil }, timeout: .seconds(5)))
-        let response = sim.result(of: fetch, on: requester)?.content
-        XCTAssertEqual(response?.entries, [root: payload])
+        let response = sim.result(of: fetch, on: requester)?.volume
+        XCTAssertEqual(response?.entries, [root: Data("fresh after unavailable".utf8)])
         XCTAssertEqual(response?.servedBy, provider.peer)
-        XCTAssertTrue(requester.core.hasEndpointSession(provider.peer))
-        // One call per session the request arrived on.
-        let asked = provider.startedJobs.filter { entry in
-            if case .authorizeContent(let peer, _, _) = entry.job { return peer.id == requester.peer }
-            return false
-        }
-        XCTAssertEqual(asked.count, 2)
         XCTAssertEqual(requester.core.freshProviderQueryCount, 1)
-        sim.releaseStorage(provider)
-        sim.run(for: .seconds(1))
-        XCTAssertEqual(provider.core.diagnostics.jobsOutstanding, 0)
     }
 
     /// "fresh discovery preserves replacement endpoints until exclusion"
@@ -274,14 +220,14 @@ final class ProviderRefreshTests: XCTestCase {
         let requester = sim.node()
         let provider = sim.node()
         let root = "provider-route-root"
-        provider.content = [root: Data("alternate provider route".utf8)]
+        provider.volumes[root] = [ContentEntry(cid: root, data: Data("alternate provider route".utf8))]
         let dead = PeerEndpoint(publicKey: provider.key.hex, host: "1.1.1.1", port: 4001)
         let live = provider.endpoint
         let expiry = sim.unixSeconds + 60
         requester.core.storeProviderHint(rootCID: root, peer: provider.peer, endpoint: dead, expiresAt: expiry)
         requester.core.storeProviderHint(rootCID: root, peer: provider.peer, endpoint: live, expiresAt: expiry)
 
-        let response = sim.await(.fetchContent(rootCID: root, cids: []), on: requester)?.content
+        let response = sim.await(volume(root), on: requester)?.volume
 
         XCTAssertTrue(requester.core.hasEndpointSession(provider.peer))
         XCTAssertEqual(response?.entries, [root: Data("alternate provider route".utf8)])
@@ -336,7 +282,7 @@ final class ProviderRefreshTests: XCTestCase {
                 expiresAt: sim.unixSeconds + 60)
         }
 
-        let response = sim.await(.fetchContent(rootCID: root, cids: []), on: node)?.content
+        let response = sim.await(volume(root), on: node)?.volume
 
         XCTAssertEqual(response, .empty)
         XCTAssertEqual(Set(sim.discoveryDials(by: node)), Set(endpoints))

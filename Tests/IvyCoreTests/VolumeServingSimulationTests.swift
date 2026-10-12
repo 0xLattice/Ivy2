@@ -829,12 +829,11 @@ final class VolumeBundleServingSimulationTests: XCTestCase {
         let peer = ServingRawPeer(sim, to: server, index: 1)
         peer.send(.volumeBundleRequest(requestID: 1, rootCID: "root"))
         peer.send(.volumeRequest(requestID: 2, rootCID: "root"))
-        peer.send(.contentRequest(requestID: 3, rootCID: "root", cids: []))
         sim.run(for: .seconds(1))
         peer.read()
         XCTAssertEqual(peer.bundleEnds, [1])
-        // A Volume or a selection it cannot serve is refused.
-        XCTAssertEqual(peer.unavailable, [2, 3])
+        // A Volume it cannot serve is refused.
+        XCTAssertEqual(peer.unavailable, [2])
         XCTAssertEqual(server.startedJobs.count, 0)
         XCTAssertServingIdle(server)
     }

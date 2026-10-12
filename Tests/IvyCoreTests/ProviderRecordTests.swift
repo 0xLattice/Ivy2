@@ -438,30 +438,35 @@ final class ProviderRecordTests: XCTestCase {
         XCTAssertEqual(asked, Set(discoveryClosest(peers.map(\.key.hex), to: "six-root").prefix(6)))
     }
 
-    /// A fetch that finds nobody runs one fresh query, however many callers share it.
+    /// Fetches that find nobody each search once, and searches for one root
+    /// that overlap share one question on the wire.
     func testFetchRunsAtMostOneFreshQuery() {
         let sim = Simulation()
         let node = sim.node()
         let responder = DiscoveryScriptedPeer(sim, to: node, index: 0)
 
-        let first = sim.request(.fetchContent(rootCID: "missing-root", cids: []), on: node)
-        let second = sim.request(.fetchContent(rootCID: "missing-root", cids: []), on: node)
+        let missing = Request.fetchVolume(
+            rootCID: "missing-root",
+            maximumArchiveBytes: MessageLimits.maxVolumeArchiveBytes,
+            maximumEntries: Int(MessageLimits.maxVolumeEntryCount))
+        let first = sim.request(missing, on: node)
+        let second = sim.request(missing, on: node)
         var questions = 0
         XCTAssertTrue(sim.runServicing(until: {
             sim.result(of: first, on: node) != nil && sim.result(of: second, on: node) != nil
         }) {
             questions += responder.answerFindProviders([])
             for request in responder.take({ message -> UInt64? in
-                if case .contentRequest(let id, _, _) = message { return id } else { return nil }
+                if case .volumeRequest(let id, _) = message { return id } else { return nil }
             }) {
                 responder.send(.contentUnavailable(requestID: request))
             }
         })
 
-        XCTAssertEqual(sim.result(of: first, on: node)?.content, .empty)
-        XCTAssertEqual(sim.result(of: second, on: node)?.content, .empty)
+        XCTAssertEqual(sim.result(of: first, on: node)?.volume, .empty)
+        XCTAssertEqual(sim.result(of: second, on: node)?.volume, .empty)
         XCTAssertEqual(questions, 1)
-        XCTAssertEqual(node.core.freshProviderQueryCount, 1)
+        XCTAssertEqual(node.core.freshProviderQueryCount, 2)
         XCTAssertTrue(node.core.providerSearches.isEmpty)
     }
 

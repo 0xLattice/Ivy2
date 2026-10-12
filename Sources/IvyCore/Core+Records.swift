@@ -20,7 +20,6 @@ struct PendingProviderQuery: Sendable {
 
 enum ProviderSearchWaiter: Sendable, Equatable {
     case request(RequestID, cached: [PeerEndpoint])
-    case contentFetch(ContentRequestKey)
     case volumeFetch(OpID)
 }
 
@@ -151,8 +150,6 @@ extension IvyCore {
         switch search.waiter {
         case .request(let request, let cached):
             complete(request, .endpoints(uniqueProviderEndpoints(cached + endpoints)))
-        case .contentFetch(let key):
-            fetchProviderSearchFinished(key, search: id, endpoints: endpoints)
         case .volumeFetch(let fetch):
             volumeFetchProviderSearchFinished(fetch, search: id, endpoints: endpoints)
         }

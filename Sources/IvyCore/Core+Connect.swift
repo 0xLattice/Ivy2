@@ -65,7 +65,6 @@ struct ConnectOp: Sendable {
 }
 
 enum GroupWaiter: Sendable, Equatable {
-    case contentFetch(ContentRequestKey)
     case volumeFetch(OpID)
 }
 
@@ -534,8 +533,6 @@ extension IvyCore {
         guard group.outstanding.isEmpty, !group.building else { return }
         connectGroups.removeValue(forKey: id)
         switch group.waiter {
-        case .contentFetch(let key):
-            fetchConnectGroupFinished(key, group: id)
         case .volumeFetch(let fetch):
             volumeFetchConnectGroupFinished(fetch, group: id)
         }

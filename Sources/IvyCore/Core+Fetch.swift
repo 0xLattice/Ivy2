@@ -1,49 +1,6 @@
 import Foundation
 import Tally
 
-enum WireContentWaiter: Sendable, Equatable {
-    case request(RequestID)
-    case fetch(ContentRequestKey)
-}
-
-/// One `contentRequest` on the wire, to one or more candidates.
-struct PendingContentRequest: Sendable {
-    let key: ContentRequestKey
-    var candidates: Set<PeerID>
-    let exactSessionID: Data?
-    let waiter: WireContentWaiter
-
-    func matches(peer: PeerID, sessionID: Data?) -> Bool {
-        candidates.contains(peer)
-            && (exactSessionID.map { $0 == sessionID } ?? true)
-    }
-}
-
-/// A coalesced content fetch: every equal request waits on one search
-/// through local storage, known providers, fresh discovery and fallback.
-struct PendingFetch: Sendable {
-    enum Phase: Sendable, Equatable {
-        case starting
-        case localRead(JobID)
-        case connectingKnown(OpID)
-        case askingKnown(UInt64)
-        case searching
-        case connectingFresh(OpID)
-        case askingFresh(UInt64)
-        case askingFallback(UInt64)
-    }
-
-    let token: UInt64
-    var waiters: [RequestID]
-    var phase: Phase = .starting
-    var cached: [PeerEndpoint] = []
-    var fresh: [PeerEndpoint] = []
-    /// The session each candidate was asked on; a peer is asked again only
-    /// on a newer one.
-    var attempted: [PeerID: LinkID] = [:]
-    var asking: [PeerID: LinkID] = [:]
-}
-
 struct VolumeAssembly: Sendable {
     let rootCID: String
     let chunkCount: UInt16
@@ -131,373 +88,14 @@ struct VolumeFetch: Sendable {
 }
 
 extension IvyCore {
-    static func fetchOrder(_ lhs: ContentRequestKey, _ rhs: ContentRequestKey) -> Bool {
-        lhs.requestedCIDs.lexicographicallyPrecedes(rhs.requestedCIDs)
-    }
-
     private var contentExchangeEnabled: Bool {
         config.mode.usesOverlayServices || config.privateContentExchangeEnabled
     }
 
-    // MARK: - Content: the coalesced fetch
-
-    /// Fetches an exact content selection. The root is always included; `cids`
-    /// names any additional entries. The response is attributed but unvalidated.
-    mutating func fetchContent(_ request: RequestID, rootCID: String, cids: [String]) {
-        guard MessageLimits.accepts(rootCID),
-              cids.count <= Int(MessageLimits.maxContentCIDCount),
-              cids.allSatisfy(MessageLimits.accepts) else {
-            return complete(request, .content(.empty))
-        }
-        let key = ContentRequestKey(rootCID: rootCID, cids: cids)
-        guard Message.contentResponseDataBudget(
-            for: key.requestedCIDs,
-            maxFrameSize: config.protocolMaxFrameSize,
-            relayed: false) != nil else {
-            return complete(request, .content(.empty))
-        }
-        if var pending = pendingFetches[key] {
-            guard pending.waiters.count < config.maxWaitersPerRequest else {
-                return complete(request, .content(.empty))
-            }
-            pending.waiters.append(request)
-            pendingFetches[key] = pending
-            requests[request] = .fetch(key)
-            return
-        }
-        guard activeFetchCount < config.maxPendingRequests else {
-            return complete(request, .content(.empty))
-        }
-        nextFetchToken &+= 1
-        activeFetchCount += 1
-        pendingFetches[key] = PendingFetch(token: nextFetchToken, waiters: [request])
-        requests[request] = .fetch(key)
-        // `requestTimeout` bounds the whole fetch for its callers.
-        timers.set(.fetch(key), at: now.uptime + config.requestTimeout)
-
-        // The node's own storage first; it takes a free serving slot without queueing.
-        if hasContentSource,
-           hasFreeServingSlot,
-           let maxDataBytes = Message.contentResponseDataBudget(
-            for: key.requestedCIDs,
-            maxFrameSize: config.protocolMaxFrameSize,
-            relayed: false) {
-            activeLocalContentRequestCount += 1
-            let job = startJob(
-                .readContent(rootCID: key.rootCID, cids: key.requestedCIDs, maxDataBytes: maxDataBytes),
-                owner: .contentFetch(key))
-            pendingFetches[key]?.phase = .localRead(job)
-        } else {
-            fetchFromNetwork(key)
-        }
-    }
-
-    mutating func fetchLocalReadFinished(_ key: ContentRequestKey, job: JobID, _ result: JobResult) {
-        activeLocalContentRequestCount -= 1
-        dispatchServingSlots()
-        guard pendingFetches[key]?.phase == .localRead(job) else { return }
-        pendingFetches[key]?.phase = .starting
-        if case .entries(let entries) = result,
-           let maxDataBytes = Message.contentResponseDataBudget(
-            for: key.requestedCIDs,
-            maxFrameSize: config.protocolMaxFrameSize,
-            relayed: false),
-           let local = validatedContent(entries, for: key, maxDataBytes: maxDataBytes) {
-            return finishFetch(key, AttributedContentResponse(entries: local, servedBy: nil))
-        }
-        fetchFromNetwork(key)
-    }
-
-    private mutating func fetchFromNetwork(_ key: ContentRequestKey) {
-        guard pendingFetches[key] != nil else { return }
-        guard isRunning, contentExchangeEnabled else { return finishFetch(key, .empty) }
-        let cached = cachedProviderEndpoints(rootCID: key.rootCID)
-        pendingFetches[key]?.cached = cached
-        if let group = startConnectGroup(cached, waiter: .contentFetch(key)) {
-            pendingFetches[key]?.phase = .connectingKnown(group)
-        } else {
-            fetchAskKnownProviders(key)
-        }
-    }
-
-    mutating func fetchConnectGroupFinished(_ key: ContentRequestKey, group: OpID) {
-        guard let pending = pendingFetches[key] else { return }
-        switch pending.phase {
-        case .connectingKnown(group):
-            fetchAskKnownProviders(key)
-        case .connectingFresh(group):
-            fetchAskFreshProviders(key)
-        default:
-            return
-        }
-    }
-
-    private mutating func fetchAskKnownProviders(_ key: ContentRequestKey) {
-        guard pendingFetches[key] != nil else { return }
-        guard isRunning else { return finishFetch(key, .empty) }
-        let candidates = Array(connectedProviderIDs(for: key.rootCID).prefix(config.maxContentCandidates))
-        if !candidates.isEmpty {
-            let asking = liveLinks(for: candidates)
-            pendingFetches[key]?.asking = asking
-            if let requestID = askContent(key, from: candidates, exactPeer: nil, waiter: .fetch(key)) {
-                pendingFetches[key]?.phase = .askingKnown(requestID)
-                return
-            }
-            mergeAttempted(key)
-        }
-        fetchSearchProviders(key)
-    }
-
-    private mutating func fetchSearchProviders(_ key: ContentRequestKey) {
-        guard pendingFetches[key] != nil else { return }
-        pendingFetches[key]?.phase = .searching
-        startProviderSearch(rootCID: key.rootCID, waiter: .contentFetch(key))
-    }
-
-    mutating func fetchProviderSearchFinished(
-        _ key: ContentRequestKey,
-        search: OpID,
-        endpoints: [PeerEndpoint]
-    ) {
-        guard var pending = pendingFetches[key], pending.phase == .searching else { return }
-        guard isRunning else { return finishFetch(key, .empty) }
-        pending.fresh = endpoints
-        pending.phase = .starting
-        pendingFetches[key] = pending
-        if let group = startConnectGroup(endpoints + pending.cached, waiter: .contentFetch(key)) {
-            pendingFetches[key]?.phase = .connectingFresh(group)
-        } else {
-            fetchAskFreshProviders(key)
-        }
-    }
-
-    private mutating func fetchAskFreshProviders(_ key: ContentRequestKey) {
-        guard let pending = pendingFetches[key] else { return }
-        guard isRunning else { return finishFetch(key, .empty) }
-        let candidates = Array(connectedProviderIDs(for: key.rootCID, including: pending.fresh)
-            .filter { pending.attempted[$0] != endpointSession(for: $0)?.link }
-            .prefix(config.maxContentCandidates))
-        if !candidates.isEmpty {
-            let asking = liveLinks(for: candidates)
-            pendingFetches[key]?.asking = asking
-            if let requestID = askContent(key, from: candidates, exactPeer: nil, waiter: .fetch(key)) {
-                pendingFetches[key]?.phase = .askingFresh(requestID)
-                return
-            }
-            mergeAttempted(key)
-        }
-        fetchAskFallback(key)
-    }
-
-    /// The peers already connected, as a last resort.
-    private mutating func fetchAskFallback(_ key: ContentRequestKey) {
-        guard let pending = pendingFetches[key] else { return }
-        let candidates = connectedFallbackCandidates(rootCID: key.rootCID, excluding: pending.attempted)
-        guard !candidates.isEmpty,
-              let requestID = askContent(key, from: candidates, exactPeer: nil, waiter: .fetch(key)) else {
-            return finishFetch(key, .empty)
-        }
-        pendingFetches[key]?.phase = .askingFallback(requestID)
-    }
-
-    private mutating func fetchWireFinished(
-        _ key: ContentRequestKey,
-        requestID: UInt64,
-        _ response: AttributedContentResponse
-    ) {
-        guard let pending = pendingFetches[key] else { return }
-        switch pending.phase {
-        case .askingKnown(requestID):
-            guard isRunning else { return finishFetch(key, .empty) }
-            if !response.entries.isEmpty { return finishFetch(key, response) }
-            mergeAttempted(key)
-            fetchSearchProviders(key)
-        case .askingFresh(requestID):
-            guard isRunning else { return finishFetch(key, .empty) }
-            if !response.entries.isEmpty { return finishFetch(key, response) }
-            mergeAttempted(key)
-            fetchAskFallback(key)
-        case .askingFallback(requestID):
-            finishFetch(key, isRunning ? response : .empty)
-        default:
-            return
-        }
-    }
-
-    private mutating func mergeAttempted(_ key: ContentRequestKey) {
-        guard var pending = pendingFetches[key] else { return }
-        pending.attempted.merge(pending.asking) { _, latest in latest }
-        pending.asking = [:]
-        pending.phase = .starting
-        pendingFetches[key] = pending
-    }
-
-    private func liveLinks(for peers: [PeerID]) -> [PeerID: LinkID] {
-        Dictionary(uniqueKeysWithValues: peers.compactMap { peer in
-            endpointSession(for: peer).map { (peer, $0.link) }
-        })
-    }
-
-    /// Ends the fetch for every caller and stops whatever it was doing. A
-    /// local read that is still running stays counted until it exits.
-    mutating func finishFetch(_ key: ContentRequestKey, _ response: AttributedContentResponse) {
-        guard let pending = pendingFetches.removeValue(forKey: key) else { return }
-        timers.cancel(.fetch(key))
-        var counted = false
-        switch pending.phase {
-        case .starting:
-            break
-        case .localRead(let job):
-            counted = true
-            abandonJob(job, holding: AbandonedJob(localSlot: true, fetchCount: true))
-        case .connectingKnown(let group), .connectingFresh(let group):
-            cancelConnectGroup(group)
-        case .askingKnown(let requestID), .askingFresh(let requestID), .askingFallback(let requestID):
-            pendingContentRequests.removeValue(forKey: requestID)
-            timers.cancel(.contentRequest(requestID))
-        case .searching:
-            for (id, search) in providerSearches where search.waiter == .contentFetch(key) {
-                finishProviderSearch(id, [])
-            }
-        }
-        if !counted { activeFetchCount -= 1 }
-        for waiter in pending.waiters where requests[waiter] != nil {
-            complete(waiter, .content(response))
-        }
-    }
-
-    mutating func cancelFetchWaiter(_ key: ContentRequestKey, request: RequestID) {
-        guard var pending = pendingFetches[key],
-              let index = pending.waiters.firstIndex(of: request) else { return }
-        pending.waiters.remove(at: index)
-        pendingFetches[key] = pending
-        complete(request, .content(.empty))
-        if pending.waiters.isEmpty { finishFetch(key, .empty) }
-    }
-
-    // MARK: - Content: one wire request
-
-    /// Fetches one exact selection from the specified authenticated endpoint
-    /// session. A replacement connection for the same key cannot receive or
-    /// satisfy the request.
-    mutating func fetchContent(
-        _ request: RequestID,
-        rootCID: String,
-        cids: [String],
-        from peer: AuthenticatedPeer
-    ) {
-        guard MessageLimits.accepts(rootCID),
-              cids.count <= Int(MessageLimits.maxContentCIDCount),
-              cids.allSatisfy(MessageLimits.accepts) else {
-            return complete(request, .content(.empty))
-        }
-        let key = ContentRequestKey(rootCID: rootCID, cids: cids)
-        guard Message.contentResponseDataBudget(
-                for: key.requestedCIDs,
-                maxFrameSize: config.protocolMaxFrameSize,
-                relayed: peer.route != .direct) != nil,
-              let requestID = askContent(
-                key, from: [peer.id], exactPeer: peer, waiter: .request(request)) else {
-            return complete(request, .content(.empty))
-        }
-        requests[request] = .contentRequest(requestID)
-    }
-
-    /// Sends one content request to the candidates. Nil when nobody could
-    /// be asked; the waiter is then not told.
-    private mutating func askContent(
-        _ key: ContentRequestKey,
-        from candidates: [PeerID],
-        exactPeer: AuthenticatedPeer?,
-        waiter: WireContentWaiter
-    ) -> UInt64? {
-        guard isRunning, pendingContentRequests.count < config.maxPendingRequests else { return nil }
-        let requestID = makeWireOperationID(avoiding: Set(pendingContentRequests.keys))
-        let message = Message.contentRequest(requestID: requestID, rootCID: key.rootCID, cids: key.cids)
-        var enqueued: Set<PeerID> = []
-        if let exactPeer {
-            guard candidates == [exactPeer.id],
-                  let session = endpointSession(for: exactPeer.key),
-                  session.sessionID.bytes == exactPeer.sessionID,
-                  case .enqueued = enqueue(message, on: session.ref) else { return nil }
-            enqueued.insert(exactPeer.id)
-        } else {
-            for peer in candidates {
-                if case .enqueued = fireToPeer(peer, message) { enqueued.insert(peer) }
-            }
-        }
-        guard !enqueued.isEmpty else { return nil }
-        pendingContentRequests[requestID] = PendingContentRequest(
-            key: key,
-            candidates: enqueued,
-            exactSessionID: exactPeer?.sessionID,
-            waiter: waiter)
-        timers.set(.contentRequest(requestID), at: now.uptime + config.requestTimeout)
-        return requestID
-    }
-
-    mutating func handleContentResponse(
-        requestID: UInt64,
-        entries: [ContentEntry],
-        from peer: PeerID,
-        sessionID: Data?
-    ) {
-        guard let pending = pendingContentRequests[requestID],
-              pending.matches(peer: peer, sessionID: sessionID) else { return }
-        let key = pending.key
-        let requested = key.requestedSet
-
-        var result: [String: Data] = [:]
-        for entry in entries {
-            guard requested.contains(entry.cid), result[entry.cid] == nil else {
-                ledger.recordProtocolViolation(peer: peer)
-                markContentCandidateDone(requestID: requestID, peer: peer)
-                return
-            }
-            result[entry.cid] = entry.data
-        }
-        guard key.requestedCIDs.allSatisfy({ result[$0] != nil }) else {
-            markContentCandidateDone(requestID: requestID, peer: peer)
-            return
-        }
-        resolveContentRequest(requestID: requestID, entries: result, servedBy: peer)
-    }
-
     mutating func handleContentUnavailable(requestID: UInt64, from peer: PeerID, sessionID: Data?) {
-        if let pending = pendingVolumeRequests[requestID] {
-            guard pending.matches(peer: peer, sessionID: sessionID) else { return }
-            markVolumeCandidateDone(requestID: requestID, peer: peer)
-            return
-        }
-        guard let pending = pendingContentRequests[requestID],
+        guard let pending = pendingVolumeRequests[requestID],
               pending.matches(peer: peer, sessionID: sessionID) else { return }
-        markContentCandidateDone(requestID: requestID, peer: peer)
-    }
-
-    mutating func markContentCandidateDone(requestID: UInt64, peer: PeerID) {
-        guard var pending = pendingContentRequests[requestID],
-              pending.candidates.remove(peer) != nil else { return }
-        if pending.candidates.isEmpty {
-            resolveContentRequest(requestID: requestID)
-        } else {
-            pendingContentRequests[requestID] = pending
-        }
-    }
-
-    mutating func resolveContentRequest(
-        requestID: UInt64,
-        entries: [String: Data] = [:],
-        servedBy: PeerID? = nil
-    ) {
-        guard let pending = pendingContentRequests.removeValue(forKey: requestID) else { return }
-        timers.cancel(.contentRequest(requestID))
-        let response = AttributedContentResponse(entries: entries, servedBy: servedBy)
-        switch pending.waiter {
-        case .request(let request):
-            if requests[request] != nil { complete(request, .content(isRunning ? response : .empty)) }
-        case .fetch(let key):
-            fetchWireFinished(key, requestID: requestID, response)
-        }
+        markVolumeCandidateDone(requestID: requestID, peer: peer)
     }
 
     // MARK: - Volumes: the fetch
@@ -687,7 +285,7 @@ extension IvyCore {
         case 0:
             peers = connectedProviderIDs(for: fetch.rootCID)
         case 1:
-            peers = connectedFallbackCandidates(rootCID: fetch.rootCID, excluding: [:])
+            peers = connectedFallbackCandidates(rootCID: fetch.rootCID)
         default:
             peers = connectedProviderIDs(for: fetch.rootCID, including: fetch.fresh)
         }
@@ -763,10 +361,8 @@ extension IvyCore {
         exactPeer: AuthenticatedPeer?
     ) -> VolumeRequestStart {
         guard isRunning else { return .answered(.empty) }
-        let requestID = makeWireOperationID(
-            avoiding: Set(pendingContentRequests.keys).union(pendingVolumeRequests.keys))
-        guard pendingContentRequests.count + pendingVolumeRequests.count
-                < config.maxPendingRequests else {
+        let requestID = makeWireOperationID(avoiding: Set(pendingVolumeRequests.keys))
+        guard pendingVolumeRequests.count < config.maxPendingRequests else {
             return .answered(.localCapacityUnavailable)
         }
         let message = fetch.isBundle
@@ -1127,14 +723,10 @@ extension IvyCore {
 
     /// Connected peers in key order, rotated so successive fetches start
     /// with different ones.
-    mutating func connectedFallbackCandidates(
-        rootCID: String,
-        excluding attempted: [PeerID: LinkID]
-    ) -> [PeerID] {
+    mutating func connectedFallbackCandidates(rootCID: String) -> [PeerID] {
         var eligible: [PeerID] = []
         for peer in connectedEndpointPeers.sorted(by: { $0.publicKey < $1.publicKey })
-            where attempted[peer] != endpointSession(for: peer)?.link
-                && !isDeficiencySuppressed(rootCID: rootCID, peer: peer) {
+            where !isDeficiencySuppressed(rootCID: rootCID, peer: peer) {
             eligible.append(peer)
         }
         guard !eligible.isEmpty else { return [] }

@@ -3,20 +3,6 @@ import IvyCore
 import Tally
 
 public protocol IvyContentSource: Sendable {
-    /// Return every requested entry exactly once within `maxDataBytes`, or `[]`.
-    /// `cids` is canonical and includes `rootCID`. Ivy treats identifiers and
-    /// bytes as opaque.
-    func content(rootCID: String, cids: [String], maxDataBytes: Int) async -> [ContentEntry]
-
-    /// Admission hook for authenticated remote requests. Public content
-    /// sources accept every peer by default; private users can narrow access
-    /// without changing the opaque content contract.
-    func authorizesContentRequest(
-        from peer: AuthenticatedPeer,
-        rootCID: String,
-        cids: [String]
-    ) async -> Bool
-
     /// Return every entry in the complete local Volume rooted at `rootCID`, or
     /// `[]`. Ivy transports the boundary opaquely; the application validates
     /// the content-addressed bytes before publishing it.
@@ -34,14 +20,6 @@ public protocol IvyContentSource: Sendable {
 }
 
 public extension IvyContentSource {
-    func authorizesContentRequest(
-        from peer: AuthenticatedPeer,
-        rootCID: String,
-        cids: [String]
-    ) async -> Bool {
-        true
-    }
-
     func volume(rootCID: String, maxDataBytes: Int) async -> [ContentEntry] {
         []
     }

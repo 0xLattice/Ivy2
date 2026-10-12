@@ -150,6 +150,82 @@ final class VolumeFetchTests: XCTestCase {
         XCTAssertEqual(node.core.diagnostics.jobsOutstanding, 0)
     }
 
+    func testNonASCIIIdentifier() {
+        let sim = Simulation()
+        let node = sim.fetchNode(contentSource: true)
+
+        for root in ["", "\u{00e9}", "e\u{0301}"] {
+            let fetch = sim.request(
+                .fetchVolume(rootCID: root, maximumArchiveBytes: wholeVolume, maximumEntries: anyEntryCount),
+                on: node)
+            XCTAssertEqual(sim.result(of: fetch, on: node), .volume(.empty))
+        }
+        XCTAssertTrue(node.startedJobs.isEmpty)
+    }
+
+    /// Stop drains a local fetch before the first network start.
+    func testStopDrainsOfflineFetch() {
+        let sim = Simulation()
+        let node = sim.fetchNode(requestTimeout: .seconds(5), contentSource: true, start: false)
+        node.stallsStorage = true
+        let request = Request.fetchVolume(
+            rootCID: "root", maximumArchiveBytes: wholeVolume, maximumEntries: anyEntryCount)
+
+        let stale = sim.request(request, on: node)
+        XCTAssertEqual(node.startedJobs.count, 1)
+        XCTAssertNil(sim.result(of: stale, on: node))
+
+        sim.stop(node)
+        XCTAssertEqual(sim.result(of: stale, on: node), .volume(.empty))
+
+        let expected = Data("new".utf8)
+        node.volumes["root"] = [ContentEntry(cid: "root", data: expected)]
+        sim.start(node)
+        sim.releaseStorage(node)
+        sim.settleDue()
+        node.stallsStorage = false
+        XCTAssertEqual(sim.await(request, on: node)?.volume?.entries, ["root": expected])
+
+        XCTAssertEqual(sim.result(of: stale, on: node), .volume(.empty))
+        XCTAssertEqual(node.core.diagnostics.servingSlotsHeld, 0)
+        XCTAssertEqual(node.core.diagnostics.reservedServingVolumeBytes, 0)
+    }
+
+    func testFetchWithoutContentExchangeIsUnavailable() {
+        let sim = Simulation()
+        let node = sim.fetchNode(mode: .privateNetwork)
+        let peer = FetchRawPeer(sim, to: node, index: 0)
+
+        let fetch = sim.request(
+            .fetchVolume(rootCID: "root", maximumArchiveBytes: wholeVolume, maximumEntries: anyEntryCount),
+            on: node)
+
+        XCTAssertEqual(sim.result(of: fetch, on: node), .volume(.empty))
+        XCTAssertNil(peer.takeVolumeRequest())
+        XCTAssertTrue(node.core.volumeFetches.isEmpty)
+    }
+
+    /// Last-resort fallback rotates across connected peers.
+    func testConnectedFallbackIsFair() {
+        let sim = Simulation()
+        let node = sim.fetchNode(maxContentCandidates: 1)
+        let peers = (0..<3).map { FetchRawPeer(sim, to: node, index: $0) }
+
+        func firstAsked(root: String) -> [PeerID] {
+            let fetch = sim.request(
+                .fetchVolume(rootCID: root, maximumArchiveBytes: wholeVolume, maximumEntries: anyEntryCount),
+                on: node)
+            let asked = peers.filter { $0.takeVolumeRequest() != nil }.map(\.peer)
+            sim.cancel(fetch, on: node)
+            return asked
+        }
+        let asked = ["root-a", "root-b", "root-c"].map(firstAsked)
+
+        XCTAssertTrue(asked.allSatisfy { $0.count == 1 })
+        XCTAssertEqual(Set(asked.joined()), Set(peers.map(\.peer)))
+        XCTAssertTrue(node.core.outstandingVolumeRequests.isEmpty)
+    }
+
     // MARK: - Exact sessions
 
     /// An advertised Volume is fenced to the exact authenticated session.
@@ -251,13 +327,6 @@ final class VolumeFetchTests: XCTestCase {
         peer.send(.contentUnavailable(requestID: unavailableRequestID))
         XCTAssertEqual(sim.result(of: unavailableFetch, on: node), .volume(.empty))
         XCTAssertEqual(node.ledger.violations(of: peer.peer), 0)
-
-        let contentFetch = sim.request(
-            .fetchContentFrom(peer.authenticated, rootCID: "root", cids: []), on: node)
-        let contentRequestID = peer.takeContentRequest()!.requestID
-        peer.send(.contentResponse(requestID: contentRequestID, entries: entries))
-        XCTAssertEqual(sim.result(of: contentFetch, on: node), .content(AttributedContentResponse(
-            entries: ["root": Data("root".utf8)], servedBy: peer.peer)))
 
         let (malformedFetch, malformedRequestID) = begin(sim, node, from: peer, root: "malformed")
         peer.send(chunk(

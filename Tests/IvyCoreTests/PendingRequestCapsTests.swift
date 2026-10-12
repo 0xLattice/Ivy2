@@ -15,28 +15,43 @@ final class PendingRequestCapsTests: XCTestCase {
         XCTAssertEqual(core.makeWireOperationID(avoiding: [1]), 2)
     }
 
-    /// Distinct selections stop at the global cap.
+    private func volumeFrom(_ peer: FetchRawPeer, _ root: String) -> Request {
+        .fetchVolumeFrom(
+            peer.authenticated,
+            rootCID: root,
+            maximumArchiveBytes: MessageLimits.maxVolumeArchiveBytes,
+            maximumEntries: Int(MessageLimits.maxVolumeEntryCount))
+    }
+
+    private func volume(_ root: String) -> Request {
+        .fetchVolume(
+            rootCID: root,
+            maximumArchiveBytes: MessageLimits.maxVolumeArchiveBytes,
+            maximumEntries: Int(MessageLimits.maxVolumeEntryCount))
+    }
+
+    /// Distinct requests stop at the global cap.
     func testGlobalCap() {
         let sim = Simulation()
         let node = sim.fetchNode(requestTimeout: .seconds(1), maxPendingRequests: 2, maxWaitersPerRequest: 8)
         let peer = FetchRawPeer(sim, to: node, index: 0)
 
-        let first = sim.request(.fetchContentFrom(peer.authenticated, rootCID: "root-a", cids: []), on: node)
-        XCTAssertEqual(node.core.pendingContentRequests.count, 1)
-        let second = sim.request(.fetchContentFrom(peer.authenticated, rootCID: "root-b", cids: []), on: node)
-        XCTAssertEqual(node.core.pendingContentRequests.count, 2)
+        let first = sim.request(volumeFrom(peer, "root-a"), on: node)
+        XCTAssertEqual(node.core.pendingVolumeRequests.count, 1)
+        let second = sim.request(volumeFrom(peer, "root-b"), on: node)
+        XCTAssertEqual(node.core.pendingVolumeRequests.count, 2)
 
-        let rejected = sim.request(.fetchContentFrom(peer.authenticated, rootCID: "root-c", cids: []), on: node)
+        let rejected = sim.request(volumeFrom(peer, "root-c"), on: node)
 
-        XCTAssertEqual(sim.result(of: rejected, on: node), .content(.empty))
+        XCTAssertEqual(sim.result(of: rejected, on: node), .volume(.localCapacityUnavailable))
         XCTAssertEqual(sim.now, .zero)
-        XCTAssertEqual(node.core.pendingContentRequests.count, 2)
+        XCTAssertEqual(node.core.pendingVolumeRequests.count, 2)
         XCTAssertEqual(peer.takeMessages().count, 2)
 
         sim.stop(node)
-        XCTAssertEqual(sim.result(of: first, on: node), .content(.empty))
-        XCTAssertEqual(sim.result(of: second, on: node), .content(.empty))
-        XCTAssertTrue(node.core.pendingContentRequests.isEmpty)
+        XCTAssertEqual(sim.result(of: first, on: node), .volume(.empty))
+        XCTAssertEqual(sim.result(of: second, on: node), .volume(.empty))
+        XCTAssertTrue(node.core.pendingVolumeRequests.isEmpty)
     }
 
     /// Wire requests have one owner and stop at the global cap.
@@ -44,36 +59,29 @@ final class PendingRequestCapsTests: XCTestCase {
         let sim = Simulation()
         let node = sim.fetchNode(requestTimeout: .seconds(1), maxPendingRequests: 2, maxWaitersPerRequest: 2)
         let peer = FetchRawPeer(sim, to: node, index: 0)
-        let firstCIDs = ["child-b", "root", "child-a", "child-b"]
-        let equivalentCIDs = ["child-a", "child-b"]
-        XCTAssertEqual(
-            ContentRequestKey(rootCID: "root", cids: firstCIDs),
-            ContentRequestKey(rootCID: "root", cids: equivalentCIDs))
 
-        let first = sim.request(.fetchContentFrom(peer.authenticated, rootCID: "root", cids: firstCIDs), on: node)
-        XCTAssertEqual(node.core.pendingContentRequests.count, 1)
-        // An equal selection from an exact session is its own wire request.
-        let second = sim.request(
-            .fetchContentFrom(peer.authenticated, rootCID: "root", cids: equivalentCIDs), on: node)
-        XCTAssertEqual(node.core.pendingContentRequests.count, 2)
+        let first = sim.request(volumeFrom(peer, "root"), on: node)
+        XCTAssertEqual(node.core.pendingVolumeRequests.count, 1)
+        // An equal request from an exact session is its own wire request.
+        let second = sim.request(volumeFrom(peer, "root"), on: node)
+        XCTAssertEqual(node.core.pendingVolumeRequests.count, 2)
 
-        let rejected = sim.request(
-            .fetchContentFrom(peer.authenticated, rootCID: "root", cids: equivalentCIDs), on: node)
+        let rejected = sim.request(volumeFrom(peer, "root"), on: node)
 
-        XCTAssertEqual(sim.result(of: rejected, on: node), .content(.empty))
+        XCTAssertEqual(sim.result(of: rejected, on: node), .volume(.localCapacityUnavailable))
         XCTAssertEqual(sim.now, .zero)
-        XCTAssertEqual(node.core.pendingContentRequests.count, 2)
-        let wire = [peer.takeContentRequest(), peer.takeContentRequest()].compactMap { $0 }
-        XCTAssertEqual(wire.map(\.cids), [equivalentCIDs, equivalentCIDs])
+        XCTAssertEqual(node.core.pendingVolumeRequests.count, 2)
+        let wire = [peer.takeVolumeRequest(), peer.takeVolumeRequest()].compactMap { $0 }
+        XCTAssertEqual(wire.map(\.rootCID), ["root", "root"])
         XCTAssertEqual(Set(wire.map(\.requestID)).count, 2)
-        XCTAssertNil(peer.takeContentRequest())
+        XCTAssertNil(peer.takeVolumeRequest())
 
         // Each answer goes to the request it names.
         peer.send(.contentUnavailable(requestID: wire[1].requestID))
-        XCTAssertEqual(sim.result(of: second, on: node), .content(.empty))
+        XCTAssertEqual(sim.result(of: second, on: node), .volume(.empty))
         XCTAssertNil(sim.result(of: first, on: node))
         sim.stop(node)
-        XCTAssertEqual(sim.result(of: first, on: node), .content(.empty))
+        XCTAssertEqual(sim.result(of: first, on: node), .volume(.empty))
     }
 
     /// Provider queries coalesce, correlate, and aggregate bounded waiters.
@@ -131,28 +139,30 @@ final class PendingRequestCapsTests: XCTestCase {
     }
 
     /// Cancelling provider discovery promptly releases the public fetch slot.
-    func testPublicFetchProviderCancellation() {
+    func testPublicFetchProviderCancellation() throws {
         let sim = Simulation()
         let node = sim.fetchNode(requestTimeout: .seconds(5), maxPendingRequests: 1)
         let peer = FetchRawPeer(sim, to: node, index: 0, advertises: true)
 
-        let fetch = sim.request(.fetchContent(rootCID: "cancelled-root", cids: []), on: node)
+        // The connected peer misses, so the fetch goes on to discovery.
+        let fetch = sim.request(volume("cancelled-root"), on: node)
+        peer.send(.contentUnavailable(requestID: try XCTUnwrap(peer.takeVolumeRequestID())))
         XCTAssertNotNil(node.core.pendingProviderQueries["cancelled-root"])
         XCTAssertEqual(peer.takeProviderQuery()?.rootCID, "cancelled-root")
-        XCTAssertEqual(
-            node.core.pendingFetches[ContentRequestKey(rootCID: "cancelled-root", cids: [])]?.phase, .searching)
+        XCTAssertEqual(node.core.volumeFetches.values.map(\.phase), [.searching])
 
         sim.cancel(fetch, on: node)
-        XCTAssertEqual(sim.result(of: fetch, on: node), .content(.empty))
+        XCTAssertEqual(sim.result(of: fetch, on: node), .volume(.empty))
         XCTAssertNil(node.core.pendingProviderQueries["cancelled-root"])
-        XCTAssertEqual(node.core.diagnostics.activeFetches, 0)
+        XCTAssertTrue(node.core.volumeFetches.isEmpty)
         XCTAssertTrue(node.core.providerSearches.isEmpty)
 
-        let replacement = sim.request(.fetchContent(rootCID: "replacement-root", cids: []), on: node)
+        let replacement = sim.request(volume("replacement-root"), on: node)
+        peer.send(.contentUnavailable(requestID: try XCTUnwrap(peer.takeVolumeRequestID())))
         XCTAssertNotNil(node.core.pendingProviderQueries["replacement-root"])
         sim.cancel(replacement, on: node)
-        XCTAssertEqual(sim.result(of: replacement, on: node), .content(.empty))
-        XCTAssertEqual(node.core.diagnostics.activeFetches, 0)
+        XCTAssertEqual(sim.result(of: replacement, on: node), .volume(.empty))
+        XCTAssertTrue(node.core.volumeFetches.isEmpty)
         XCTAssertEqual(node.core.diagnostics.pendingRequests, 0)
     }
 }

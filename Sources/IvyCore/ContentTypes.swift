@@ -1,19 +1,6 @@
 import Foundation
 import Tally
 
-public struct AttributedContentResponse: Sendable, Equatable {
-    public let entries: [String: Data]
-    /// The authenticated remote server, or `nil` for a local-source result.
-    public let servedBy: PeerID?
-
-    public static let empty = AttributedContentResponse(entries: [:], servedBy: nil)
-
-    public init(entries: [String: Data], servedBy: PeerID?) {
-        self.entries = entries
-        self.servedBy = servedBy
-    }
-}
-
 public enum VolumeFetchFailure: Sendable, Equatable {
     case callerBoundaryExceeded
     case localCapacityUnavailable
@@ -174,17 +161,4 @@ struct VolumeArchive {
         }
         return containsRoot && reader.remaining == 0 ? entries : nil
     }
-}
-
-struct ContentRequestKey: Hashable, Sendable {
-    let rootCID: String
-    let cids: [String]
-
-    init(rootCID: String, cids: [String]) {
-        self.rootCID = rootCID
-        self.cids = Array(Set(cids.filter { $0 != rootCID })).sorted()
-    }
-
-    var requestedCIDs: [String] { [rootCID] + cids }
-    var requestedSet: Set<String> { Set(requestedCIDs) }
 }

@@ -1,7 +1,7 @@
 import Crypto
 import Foundation
 import XCTest
-import Ivy
+@testable import Ivy
 import Tally
 
 /// The thin end-to-end tier: the facade and the TCP shell over real sockets.
@@ -66,18 +66,20 @@ final class TCPIntegrationTests: XCTestCase {
         await b.stop()
     }
 
-    func testFetchContentThroughContentSource() async throws {
+    func testFetchVolumeThroughContentSource() async throws {
         let a = makeNode()
         let b = makeNode()
-        await b.setContentSource(Store(content: ["root": Data("r".utf8), "leaf": Data("l".utf8)]))
+        await b.setContentSource(Store(volumes: ["root": [
+            ContentEntry(cid: "root", data: Data("r".utf8)), ContentEntry(cid: "leaf", data: Data("l".utf8)),
+        ]]))
         try await a.start()
         try await b.start()
         try await a.connect(to: await endpoint(b))
 
-        let response = await a.fetchContent(rootCID: "root", cids: ["leaf"])
+        let response = await a.fetchVolume(rootCID: "root")
         XCTAssertEqual(response.entries, ["root": Data("r".utf8), "leaf": Data("l".utf8)])
         XCTAssertEqual(response.servedBy, b.localID)
-        let missing = await a.fetchContent(rootCID: "absent")
+        let missing = await a.fetchVolume(rootCID: "absent")
         XCTAssertEqual(missing, .empty)
         await a.stop()
         await b.stop()
@@ -184,6 +186,27 @@ final class TCPIntegrationTests: XCTestCase {
         await b.stop()
     }
 
+#if DEBUG || IVY_TESTING
+    func testDialRewriteRedirectsTheSocketNotTheIdentity() async throws {
+        let a = makeNode()
+        let b = makeNode()
+        try await a.start()
+        try await b.start()
+        let real = await endpoint(b)
+        await a.setDialEndpointRewriteForTesting { dialled in
+            dialled.host == "8.8.4.4"
+                ? PeerEndpoint(publicKey: dialled.publicKey, host: "127.0.0.1", port: dialled.port)
+                : dialled
+        }
+        // A routable address nobody listens on, redirected to the loopback listener.
+        try await a.connect(to: PeerEndpoint(publicKey: real.publicKey, host: "8.8.4.4", port: real.port))
+        let connected = await eventually { await b.connectedPeers == [a.localID] }
+        XCTAssertTrue(connected)
+        await a.stop()
+        await b.stop()
+    }
+#endif
+
     func testDialToClosedPortFails() async throws {
         let a = makeNode()
         try await a.start()
@@ -264,13 +287,7 @@ private final class Recorder: IvyDelegate, Sendable {
 }
 
 private struct Store: IvyContentSource {
-    var content: [String: Data] = [:]
     var volumes: [String: [ContentEntry]] = [:]
-
-    func content(rootCID: String, cids: [String], maxDataBytes: Int) async -> [ContentEntry] {
-        let entries = cids.compactMap { cid in content[cid].map { ContentEntry(cid: cid, data: $0) } }
-        return entries.count == cids.count ? entries : []
-    }
 
     func volume(rootCID: String, maxDataBytes: Int) async -> [ContentEntry] {
         volumes[rootCID] ?? []

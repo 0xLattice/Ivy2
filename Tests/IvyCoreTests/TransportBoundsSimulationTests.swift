@@ -64,11 +64,8 @@ final class TransportBoundsSimulationTests: XCTestCase {
         XCTAssertTrue(Message.peerMessage(topic: longTopic, payload: Data()).serialize().isEmpty)
 
         var malformed = Data()
-        malformed.appendUInt8(26)
-        malformed.appendUInt64(1)
-        malformed.appendUInt16(4)
-        malformed.append(Data("root".utf8))
-        malformed.appendUInt16(MessageLimits.maxContentCIDCount + 1)
+        malformed.appendUInt8(6)
+        malformed.appendUInt16(MessageLimits.maxNeighborCount + 1)
         XCTAssertNil(Message.deserialize(malformed))
     }
 
@@ -241,17 +238,17 @@ final class TransportBoundsSimulationTests: XCTestCase {
         XCTAssertEqual(remote.received.count, 100)
     }
 
-    // "a content response waits out a backpressured connection"
-    func testContentResponseWaitsForWritability() {
+    // A Volume reply waits out a backpressured connection.
+    func testVolumeReplyWaitsForWritability() {
         let sim = Simulation()
         let node = sim.node()
         let content = Data(repeating: 7, count: 1_000)
-        node.content = ["root": content]
+        node.volumes["root"] = [ContentEntry(cid: "root", data: content)]
         let peer = stalledPeer(sim, node)
         sim.saturate(node, toward: peer.id)
         _ = peer.takeRecords()
 
-        peer.send(Message.contentRequest(requestID: 1, rootCID: "root", cids: []))
+        peer.send(Message.volumeRequest(requestID: 1, rootCID: "root"))
         sim.run(for: .milliseconds(100))
         XCTAssertTrue(peer.takeRecords().isEmpty)
         XCTAssertFalse(peer.isClosed)
@@ -259,8 +256,10 @@ final class TransportBoundsSimulationTests: XCTestCase {
         sim.setRawStalled(false, peer.connection, at: node)
         sim.run(for: .seconds(1))
         let responses = peer.takeMessages().compactMap { message -> [ContentEntry]? in
-            if case .contentResponse(1, let entries) = message { return entries }
-            return nil
+            guard case .volumeChunk(1, "root", 0, 1, let totalEntries, _, let payload) = message else {
+                return nil
+            }
+            return VolumeArchive.decode(payload, rootCID: "root", expectedEntries: totalEntries)
         }
         XCTAssertEqual(responses.count, 1)
         XCTAssertEqual(responses.first?.map(\.cid), ["root"])
@@ -271,45 +270,43 @@ final class TransportBoundsSimulationTests: XCTestCase {
     // MARK: - Teardown
 
     // "teardown resolves every pending targeted content continuation"
-    func testTeardownResolvesPendingContentFetch() {
+    func testTeardownResolvesPendingVolumeFetch() {
         let sim = Simulation()
         let node = sim.node()
         let silent = sim.node()
         silent.stallsStorage = true
         sim.connect(node, silent)
 
-        let fetch = sim.request(.fetchContentFrom(
-            sim.session(node, to: silent), rootCID: "pending-root", cids: ["pending-child"]), on: node)
+        let fetch = sim.fetchVolume("pending-root", from: silent, on: node)
         sim.run(for: .milliseconds(100))
-        XCTAssertEqual(node.core.pendingContentRequests.count, 1)
+        XCTAssertEqual(node.core.pendingVolumeRequests.count, 1)
         XCTAssertNil(sim.result(of: fetch, on: node))
 
         sim.stop(node)
 
-        let response = sim.result(of: fetch, on: node)?.content
+        let response = sim.result(of: fetch, on: node)?.volume
         XCTAssertEqual(response?.entries.isEmpty, true)
         XCTAssertNil(response?.servedBy)
-        XCTAssertTrue(node.core.pendingContentRequests.isEmpty)
+        XCTAssertTrue(node.core.pendingVolumeRequests.isEmpty)
     }
 
     // The same request ends when only its peer goes away.
-    func testPeerDisconnectResolvesPendingContentFetch() {
+    func testPeerDisconnectResolvesPendingVolumeFetch() {
         let sim = Simulation()
         let node = sim.node()
         let silent = sim.node()
         silent.stallsStorage = true
         sim.connect(node, silent)
 
-        let fetch = sim.request(.fetchContentFrom(
-            sim.session(node, to: silent), rootCID: "pending-root", cids: ["pending-child"]), on: node)
+        let fetch = sim.fetchVolume("pending-root", from: silent, on: node)
         sim.run(for: .milliseconds(100))
-        XCTAssertEqual(node.core.pendingContentRequests.count, 1)
+        XCTAssertEqual(node.core.pendingVolumeRequests.count, 1)
 
         sim.send(.command(.disconnect(silent.peer)), to: node)
 
-        XCTAssertEqual(sim.result(of: fetch, on: node)?.content, .empty)
-        XCTAssertTrue(node.core.pendingContentRequests.isEmpty)
-        XCTAssertEqual(node.core.diagnostics.activeFetches, 0)
+        XCTAssertEqual(sim.result(of: fetch, on: node)?.volume, .empty)
+        XCTAssertTrue(node.core.pendingVolumeRequests.isEmpty)
+        XCTAssertTrue(node.core.volumeFetches.isEmpty)
     }
 
     // "peer retirement resolves session-bound neighbor work"

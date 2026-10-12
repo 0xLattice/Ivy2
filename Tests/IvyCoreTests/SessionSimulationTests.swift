@@ -38,17 +38,20 @@ final class SessionSimulationTests: XCTestCase {
         XCTAssertEqual(b.connected.map(\.id), [a.peer])
     }
 
-    func testFetchContentFromConnectedPeer() {
+    func testFetchVolumeFromConnectedPeer() {
         let sim = Simulation()
         let a = sim.node()
         let b = sim.node()
-        b.content = ["root": Data("r".utf8), "leaf": Data("l".utf8)]
+        b.volumes["root"] = [
+            ContentEntry(cid: "root", data: Data("r".utf8)), ContentEntry(cid: "leaf", data: Data("l".utf8)),
+        ]
         sim.connect(a, b)
 
-        let response = sim.await(.fetchContent(rootCID: "root", cids: ["leaf"]), on: a)?.content
+        let response = sim.await(
+            .fetchVolume(rootCID: "root", maximumArchiveBytes: .max, maximumEntries: .max), on: a)?.volume
         XCTAssertEqual(response?.entries, ["root": Data("r".utf8), "leaf": Data("l".utf8)])
         XCTAssertEqual(response?.servedBy, b.peer)
-        XCTAssertEqual(a.core.diagnostics.activeFetches, 0)
+        XCTAssertTrue(a.core.volumeFetches.isEmpty)
         XCTAssertEqual(b.core.diagnostics.servingSlotsHeld, 0)
     }
 

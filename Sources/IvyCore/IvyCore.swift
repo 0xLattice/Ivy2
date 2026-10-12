@@ -88,13 +88,9 @@ public struct IvyCore: Sendable {
 
     // MARK: Fetching
 
-    var pendingContentRequests: [UInt64: PendingContentRequest] = [:]
     var pendingVolumeRequests: [UInt64: PendingVolumeRequest] = [:]
     var inFlightVolumeBytes = 0
     var reservedVolumeBytes = 0
-    var pendingFetches: [ContentRequestKey: PendingFetch] = [:]
-    var nextFetchToken: UInt64 = 0
-    var activeFetchCount = 0
     var volumeFetches: [OpID: VolumeFetch] = [:]
     /// This node's Volume requests in flight to each peer.
     var outstandingVolumeRequests: [PeerID: Int] = [:]
@@ -279,8 +275,6 @@ public struct IvyCore: Sendable {
 
         failAllServing()
         for id in volumeFetches.keys.sorted() { finishVolumeFetch(id, .empty) }
-        for key in pendingFetches.keys.sorted(by: Self.fetchOrder) { finishFetch(key, .empty) }
-        for id in pendingContentRequests.keys.sorted() { resolveContentRequest(requestID: id) }
         for id in pendingVolumeRequests.keys.sorted() { resolveVolumeRequest(requestID: id) }
         for id in lookups.keys.sorted() { finishLookup(id, cancelled: true) }
         for id in providerSearches.keys.sorted() { finishProviderSearch(id, []) }
@@ -336,7 +330,7 @@ public struct IvyCore: Sendable {
 
     private mutating func fireExpiredTimers() {
         // Stopping drops every deadline of the run, so whatever is due here
-        // is current. A content fetch keeps its deadline on a stopped node too.
+        // is current.
         for kind in timers.popExpired(at: now.uptime) {
             switch kind {
             case .health:
@@ -361,12 +355,8 @@ public struct IvyCore: Sendable {
                 if let pending = pendingProviderQueries[rootCID] {
                     resolveProviderQuery(rootCID: rootCID, requestID: pending.requestID)
                 }
-            case .contentRequest(let requestID):
-                resolveContentRequest(requestID: requestID)
             case .volumeRequest(let requestID):
                 timeOutVolumeRequest(requestID: requestID)
-            case .fetch(let key):
-                finishFetch(key, .empty)
             case .serving(let request):
                 servingTimedOut(request)
             }
@@ -410,10 +400,6 @@ public struct IvyCore: Sendable {
                 return complete(id, .writable(false))
             }
             waitUntilWritable(session.link, for: id)
-        case let .fetchContent(rootCID, cids):
-            fetchContent(id, rootCID: rootCID, cids: cids)
-        case let .fetchContentFrom(peer, rootCID, cids):
-            fetchContent(id, rootCID: rootCID, cids: cids, from: peer)
         case let .fetchVolume(rootCID, maximumArchiveBytes, maximumEntries):
             fetchVolume(
                 id,
@@ -451,10 +437,6 @@ public struct IvyCore: Sendable {
         case .writable:
             removeWritabilityWaiter(.request(id))
             complete(id, .writable(false))
-        case .fetch(let key):
-            cancelFetchWaiter(key, request: id)
-        case .contentRequest(let requestID):
-            resolveContentRequest(requestID: requestID)
         case .volumeFetch(let op):
             finishVolumeFetch(op, .empty)
         case .lookup(let op):
@@ -539,7 +521,6 @@ public struct IvyCore: Sendable {
             relayRoutes: relayRoutes.count,
             installedRoutes: installedRoutes.count,
             pendingRelayOpens: pendingRelayOpens.count,
-            activeFetches: activeFetchCount,
             inFlightVolumeBytes: inFlightVolumeBytes,
             reservedVolumeBytes: reservedVolumeBytes,
             reservedServingVolumeBytes: reservedServingVolumeBytes,
@@ -549,7 +530,6 @@ public struct IvyCore: Sendable {
             jobsOutstanding: jobs.count,
             deadlines: timers.count,
             pendingRequests: requests.count
-                + pendingContentRequests.count
                 + pendingVolumeRequests.count
                 + pendingNeighborResponses.count
                 + pendingProviderQueries.count)
@@ -562,7 +542,6 @@ public struct IvyCore: Sendable {
         public let relayRoutes: Int
         public let installedRoutes: Int
         public let pendingRelayOpens: Int
-        public let activeFetches: Int
         public let inFlightVolumeBytes: Int
         public let reservedVolumeBytes: Int
         public let reservedServingVolumeBytes: Int
@@ -588,9 +567,7 @@ enum TimerKind: Hashable, Sendable {
     case relayForward(LinkID)
     case neighbor(UInt64)
     case providerQuery(String)
-    case contentRequest(UInt64)
     case volumeRequest(UInt64)
-    case fetch(ContentRequestKey)
     case serving(InboundContentRequest)
 }
 
@@ -653,8 +630,6 @@ struct TimerTable: Sendable {
 enum RequestBinding: Sendable, Equatable {
     case connect(OpID)
     case writable(LinkID)
-    case fetch(ContentRequestKey)
-    case contentRequest(UInt64)
     case volumeFetch(OpID)
     case lookup(OpID)
     case providerSearch(OpID)
