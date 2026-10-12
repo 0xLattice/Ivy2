@@ -156,37 +156,38 @@ final class RelayedSessionTests: XCTestCase {
         XCTAssertEqual(c.ledger.violations(of: a.peer) + c.ledger.violations(of: b.peer), 0)
     }
 
-    func testContentFetchWorksOverRelayWithTheRelayedBudget() {
+    func testVolumeFetchWorksOverRelayWithTheRelayedBudget() {
         let sim = Simulation()
         let (c, a, b) = sim.relayTriangle(frame: smallFrame)
-        b.content = ["root": Data("r".utf8), "leaf": Data(repeating: 7, count: 100_000)]
+        let entries = ["root": Data("r".utf8), "leaf": Data(repeating: 7, count: 100_000)]
+        b.volumes["root"] = entries.map { ContentEntry(cid: $0.key, data: $0.value) }
         sim.connectRelayed(a, b)
 
-        let response = sim.await(.fetchContent(rootCID: "root", cids: ["leaf"]), on: a)?.content
-        XCTAssertEqual(response?.entries, b.content)
+        let response = sim.await(
+            .fetchVolume(rootCID: "root", maximumArchiveBytes: .max, maximumEntries: .max), on: a)?.volume
+        XCTAssertEqual(response?.entries, entries)
         XCTAssertEqual(response?.servedBy, b.peer)
 
         let exact = sim.await(
-            .fetchContentFrom(sim.session(a, to: b), rootCID: "root", cids: ["leaf"]), on: a)?.content
-        XCTAssertEqual(exact?.entries, b.content)
+            .fetchVolumeFrom(
+                sim.session(a, to: b), rootCID: "root", maximumArchiveBytes: .max, maximumEntries: .max),
+            on: a)?.volume
+        XCTAssertEqual(exact?.entries, entries)
         XCTAssertEqual(exact?.servedBy, b.peer)
 
-        // The server sized its read for a frame that must also fit the
-        // carrier's envelope and record.
-        let cids = ContentRequestKey(rootCID: "root", cids: ["leaf"]).requestedCIDs
-        let relayed = Message.contentResponseDataBudget(for: cids, maxFrameSize: smallFrame, relayed: true)
-        let direct = Message.contentResponseDataBudget(for: cids, maxFrameSize: smallFrame, relayed: false)
-        let budgets: [Int] = b.startedJobs.compactMap {
-            if case .readContent(_, _, let maxDataBytes) = $0.job { return maxDataBytes }
-            return nil
-        }
-        XCTAssertEqual(budgets.count, 2)
-        XCTAssertTrue(budgets.allSatisfy { $0 == relayed })
+        // A chunk is sized for a frame that must also fit the carrier's
+        // envelope and record.
+        let relayed = Message.volumeChunkDataBudget(rootCID: "root", maxFrameSize: smallFrame, relayed: true)
+        let direct = Message.volumeChunkDataBudget(rootCID: "root", maxFrameSize: smallFrame, relayed: false)
+        XCTAssertEqual(b.startedJobs.filter {
+            if case .readVolume = $0.job { return true }
+            return false
+        }.count, 2)
         XCTAssertEqual(
             relayed.map { $0 + Message.relayPacketEnvelopeOverhead + SessionWireRecord.dataRecordOverhead },
             direct)
         XCTAssertTrue(c.startedJobs.isEmpty)
-        XCTAssertEqual(a.core.diagnostics.activeFetches, 0)
+        XCTAssertTrue(a.core.volumeFetches.isEmpty)
         XCTAssertEqual(b.core.diagnostics.servingSlotsHeld, 0)
     }
 
@@ -279,7 +280,7 @@ final class RelayedSessionTests: XCTestCase {
     func testCarriersNeverEnterEndpointRouting() {
         let sim = Simulation()
         let (c, a, b) = sim.relayTriangle()
-        c.content = ["root": Data("held by the carrier".utf8)]
+        c.volumes["root"] = [ContentEntry(cid: "root", data: Data("held by the carrier".utf8))]
 
         // Attached to a carrier and nothing else: no endpoint peer at all.
         XCTAssertEqual(a.core.sessions[c.key]?.role, .carrier)
@@ -295,7 +296,9 @@ final class RelayedSessionTests: XCTestCase {
         XCTAssertEqual(sim.await(.waitUntilWritable(c.peer), on: a), .writable(false))
         XCTAssertEqual(sim.await(.findNode(target: c.key.hex), on: a)?.endpoints, [])
         XCTAssertEqual(
-            sim.await(.fetchContent(rootCID: "root", cids: []), on: a)?.content, .empty)
+            sim.await(
+                .fetchVolume(rootCID: "root", maximumArchiveBytes: .max, maximumEntries: .max), on: a)?.volume,
+            .empty)
         XCTAssertTrue(c.startedJobs.isEmpty)
 
         sim.connectRelayed(a, b)
@@ -316,8 +319,8 @@ final class RelayedSessionTests: XCTestCase {
         let forbidden: [Message] = [
             .peerMessage(topic: "t", payload: Data([1])),
             .findNode(target: Data(repeating: 1, count: 32), nonce: 3),
-            .contentRequest(requestID: 1, rootCID: "root", cids: []),
             .volumeRequest(requestID: 1, rootCID: "root"),
+            .volumeBundleRequest(requestID: 1, rootCID: "root"),
             .announceProvider(rootCID: "root", expiresAt: 2_000_000_000),
         ]
         for message in forbidden {

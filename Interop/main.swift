@@ -15,6 +15,7 @@ func key(_ byte: UInt8) -> Curve25519.Signing.PrivateKey {
 
 struct Store: IvyContentSource {
     let tag: UInt8
+    // 15.0.1's protocol requires this; this checkout has no such requirement.
     func content(rootCID: String, cids: [String], maxDataBytes: Int) async -> [ContentEntry] {
         guard rootCID == "root" else { return [] }
         return cids.map { ContentEntry(cid: $0, data: Data(($0 + "-\(tag)").utf8)) }
@@ -88,14 +89,7 @@ check(sent == .enqueued(endpoint: peerID, route: .direct), "message enqueued")
 for _ in 0..<500 where await echo.box.echoes.isEmpty { try await Task.sleep(nanoseconds: 10_000_000) }
 check(await echo.box.echoes.first?.payload == payload, "message echoed back intact")
 
-let content = await ivy.fetchContent(rootCID: "root-remote")
-check(content.entries.isEmpty, "absent content is unavailable")
 let session = await echo.box.peers.first!
-let exact = await ivy.fetchContent(rootCID: "root", cids: ["a", "b"], from: session)
-check(exact.entries == [
-    "root": Data("root-\(peerByte)".utf8), "a": Data("a-\(peerByte)".utf8), "b": Data("b-\(peerByte)".utf8),
-] && exact.servedBy == peerID, "exact content selection from the peer")
-
 let volume = await ivy.fetchVolume(rootCID: "vol", from: session)
 check(volume.entries.count == 11 && volume.entries["vol"] == Data(repeating: peerByte, count: 100)
     && volume.entries["vol-9"] == Data(repeating: 9, count: 1024 * 1024) && volume.servedBy == peerID,

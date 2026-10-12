@@ -37,15 +37,6 @@ final class MessageTests: XCTestCase {
             (.neighbors([], nonce: 2), "0600000000000000000002"),
             (.neighbors([endpoint], nonce: 2),
              "0600010002706b00016812340000000000000002"),
-            (.contentRequest(requestID: 3, rootCID: "r", cids: []),
-             "1a00000000000000030001720000"),
-            (.contentRequest(requestID: 3, rootCID: "r", cids: ["a", "bc"]),
-             "1a0000000000000003000172000200016100026263"),
-            (.contentResponse(requestID: 3, entries: []), "3200000000000000030000"),
-            (.contentResponse(requestID: 3, entries: [
-                ContentEntry(cid: "r", data: Data([1, 2])),
-                ContentEntry(cid: "x", data: Data()),
-            ]), "320000000000000003000200017200000002010200017800000000"),
             (.contentUnavailable(requestID: 3), "3a0000000000000003"),
             (.volumeRequest(requestID: 3, rootCID: "r"),
              "1b0000000000000003000172"),
@@ -98,14 +89,11 @@ final class MessageTests: XCTestCase {
         let endpoint = PeerEndpoint(publicKey: "peer", host: "192.0.2.1", port: 4001)
         let peerKey = try PeerKey(rawRepresentation: Data(repeating: 0x44, count: 32))
         let routeID = Data(repeating: 0x22, count: 32)
-        let entries = [ContentEntry(cid: "root", data: Data([1, 2, 3]))]
         let messages: [Message] = [
             .ping(nonce: 1),
             .pong(nonce: 1),
             .findNode(target: Data(repeating: 0xab, count: 32), nonce: 2),
             .neighbors([endpoint], nonce: 2),
-            .contentRequest(requestID: 3, rootCID: "root", cids: ["child"]),
-            .contentResponse(requestID: 3, entries: entries),
             .contentUnavailable(requestID: 3),
             .volumeRequest(requestID: 3, rootCID: "root"),
             .volumeBundleRequest(requestID: 3, rootCID: "root"),
@@ -141,79 +129,24 @@ final class MessageTests: XCTestCase {
         }
     }
 
-    /// targeted content preserves selection and bytes
-    func testTargetedContent() {
-        let request = Message.contentRequest(
-            requestID: 11,
-            rootCID: "root",
-            cids: ["child-a", "child-b"])
-        guard case .contentRequest(let requestID, let root, let cids) = Message.deserialize(request.serialize()) else {
-            XCTFail("Expected content request")
-            return
-        }
-        XCTAssert(requestID == 11)
-        XCTAssert(root == "root")
-        XCTAssert(cids == ["child-a", "child-b"])
-
-        let entries = [
-            ContentEntry(cid: "root", data: Data([1])),
-            ContentEntry(cid: "child-a", data: Data([2, 3])),
+    /// Tags 26 and 50 carried content selections. They are retired: a
+    /// record that opens with one is a message this version does not know.
+    func testRetiredContentSelectionTagsAreUnknown() throws {
+        // A 15.x `contentRequest` and `contentResponse`, as they were framed.
+        let retired = [
+            "1a0000000000000003000172000200016100026263",
+            "320000000000000003000200017200000002010200017800000000",
         ]
-        guard case .contentResponse(let responseID, let decoded) = Message.deserialize(
-            Message.contentResponse(requestID: 11, entries: entries).serialize()
-        ) else {
-            XCTFail("Expected content response")
-            return
+        for hex in retired {
+            let bytes = try XCTUnwrap(Data(hexString: hex))
+            XCTAssertNil(Message.deserialize(bytes))
+            XCTAssertTrue(Message.hasUnknownTag(bytes))
         }
-        XCTAssert(responseID == 11)
-        XCTAssert(decoded == entries)
-    }
-
-    /// content response budgets exactly include direct and relayed framing
-    func testContentResponseBudgets() throws {
-        let frameSize: UInt32 = 512
-        let cids = ["root", "child"]
-        let directBudget = try XCTUnwrap(Message.contentResponseDataBudget(
-            for: cids,
-            maxFrameSize: frameSize,
-            relayed: false))
-        let relayedBudget = try XCTUnwrap(Message.contentResponseDataBudget(
-            for: cids,
-            maxFrameSize: frameSize,
-            relayed: true))
-        XCTAssert(directBudget == 367)
-        XCTAssert(relayedBudget == 217)
-
-        func response(_ dataBytes: Int) -> Data {
-            Message.contentResponse(requestID: 1, entries: [
-                ContentEntry(cid: "root", data: Data(repeating: 0xaa, count: dataBytes)),
-                ContentEntry(cid: "child", data: Data()),
-            ]).serialize(maxFrameSize: frameSize)
-        }
-
-        XCTAssert(try signedDataRecord(response(directBudget), keyByte: 1)
-            .serialize(maxPayload: frameSize).count == Int(frameSize))
-        XCTAssert(try signedDataRecord(response(directBudget + 1), keyByte: 1)
-            .serialize(maxPayload: frameSize).isEmpty)
-
-        let routeID = Data(repeating: 0x44, count: 32)
-        let endpointRecord = try signedDataRecord(response(relayedBudget), keyByte: 1)
-            .serialize(maxPayload: frameSize)
-        let relayPacket = Message.relayPacket(
-            routeID: routeID,
-            opaqueEndpointRecord: endpointRecord
-        ).serialize(maxFrameSize: frameSize)
-        XCTAssert(try signedDataRecord(relayPacket, keyByte: 3)
-            .serialize(maxPayload: frameSize).count == Int(frameSize))
-
-        let oversizedEndpointRecord = try signedDataRecord(response(relayedBudget + 1), keyByte: 1)
-            .serialize(maxPayload: frameSize)
-        let oversizedRelayPacket = Message.relayPacket(
-            routeID: routeID,
-            opaqueEndpointRecord: oversizedEndpointRecord
-        ).serialize(maxFrameSize: frameSize)
-        XCTAssert(try signedDataRecord(oversizedRelayPacket, keyByte: 3)
-            .serialize(maxPayload: frameSize).isEmpty)
+        XCTAssertTrue(Message.hasUnknownTag(Data([26])))
+        XCTAssertTrue(Message.hasUnknownTag(Data([50])))
+        // A known tag that does not decode is malformed, not unknown.
+        XCTAssertFalse(Message.hasUnknownTag(Data([58])))
+        XCTAssertNil(Message.deserialize(Data([58])))
     }
 
     /// Volume chunks exactly include direct and relayed framing
@@ -271,19 +204,6 @@ final class MessageTests: XCTestCase {
             .serialize(maxPayload: frameSize).isEmpty)
     }
 
-    /// content response serialization preflights its exact aggregate size
-    func testContentResponsePreflight() {
-        let exact = Message.contentResponse(
-            requestID: 1,
-            entries: [ContentEntry(cid: "root", data: Data(repeating: 0xaa, count: 11))])
-        let oversized = Message.contentResponse(
-            requestID: 1,
-            entries: [ContentEntry(cid: "root", data: Data(repeating: 0xaa, count: 12))])
-
-        XCTAssert(exact.serialize(maxFrameSize: 32).count == 32)
-        XCTAssert(oversized.serialize(maxFrameSize: 32).isEmpty)
-    }
-
     /// malformed messages and invalid identifiers are rejected
     func testMalformed() {
         XCTAssert(Message.deserialize(Data()) == nil)
@@ -292,19 +212,6 @@ final class MessageTests: XCTestCase {
         var trailing = Message.ping(nonce: 1).serialize()
         trailing.append(0)
         XCTAssert(Message.deserialize(trailing) == nil)
-
-        var zeroContentRequest = Message.contentRequest(
-            requestID: 1,
-            rootCID: "root",
-            cids: []).serialize()
-        zeroContentRequest.replaceSubrange(1..<9, with: repeatElement(0, count: 8))
-        XCTAssert(Message.deserialize(zeroContentRequest) == nil)
-
-        var zeroContentResponse = Message.contentResponse(
-            requestID: 1,
-            entries: []).serialize()
-        zeroContentResponse.replaceSubrange(1..<9, with: repeatElement(0, count: 8))
-        XCTAssert(Message.deserialize(zeroContentResponse) == nil)
 
         var zeroUnavailable = Message.contentUnavailable(requestID: 1).serialize()
         zeroUnavailable.replaceSubrange(1..<9, with: repeatElement(0, count: 8))
@@ -331,10 +238,9 @@ final class MessageTests: XCTestCase {
         let unicodeEquivalent = ["\u{00e9}", "e\u{0301}"]
         XCTAssert(unicodeEquivalent[0] == unicodeEquivalent[1])
         for identifier in unicodeEquivalent {
-            XCTAssert(Message.contentRequest(
+            XCTAssert(Message.volumeRequest(
                 requestID: 1,
-                rootCID: identifier,
-                cids: []).serialize().isEmpty)
+                rootCID: identifier).serialize().isEmpty)
             XCTAssert(Message.findProviders(
                 rootCID: identifier,
                 requestID: 1).serialize().isEmpty)

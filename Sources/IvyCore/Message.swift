@@ -21,8 +21,6 @@ enum Message: Sendable {
     case findNode(target: Data, nonce: UInt64 = 0)
     case neighbors([PeerEndpoint], nonce: UInt64 = 0)
 
-    case contentRequest(requestID: UInt64, rootCID: String, cids: [String])
-    case contentResponse(requestID: UInt64, entries: [ContentEntry])
     case contentUnavailable(requestID: UInt64)
     case volumeRequest(requestID: UInt64, rootCID: String)
     case volumeChunk(
@@ -59,12 +57,13 @@ enum Message: Sendable {
     /// tag, the 32-byte route ID, and the 4-byte length prefix on the record.
     static let relayPacketEnvelopeOverhead = 1 + 32 + 4
 
+    /// Tags 26 and 50 carried content selection requests and their answers.
+    /// They are retired: never reuse them.
     private enum Tag: UInt8 {
         case ping = 0
         case pong = 1
         case findNode = 5
         case neighbors = 6
-        case contentRequest = 26
         case volumeRequest = 27
         case volumeChunk = 28
         case volumeBundleRequest = 29
@@ -73,7 +72,6 @@ enum Message: Sendable {
         case providers = 41
         case announceProvider = 42
         case peerMessage = 49
-        case contentResponse = 50
         case contentUnavailable = 58
         case relayOpen = 60
         case relayOffer = 61
@@ -88,21 +86,6 @@ enum Message: Sendable {
         case .ping, .pong: return true
         default: return false
         }
-    }
-
-    static func contentResponseDataBudget(
-        for cids: [String],
-        maxFrameSize: UInt32,
-        relayed: Bool
-    ) -> Int? {
-        var remaining = Int(maxFrameSize)
-        guard consume(SessionWireRecord.dataRecordOverhead, from: &remaining) else { return nil }
-        if relayed {
-            // relayPacket tag, route ID, and endpoint-record length, then the carrier record.
-            guard consume(1 + 32 + 4, from: &remaining),
-                  consume(SessionWireRecord.dataRecordOverhead, from: &remaining) else { return nil }
-        }
-        return contentResponsePayloadBudget(for: cids, within: remaining)
     }
 
     static func volumeChunkDataBudget(
@@ -152,27 +135,6 @@ enum Message: Sendable {
             bytes.append(Tag.neighbors.rawValue)
             guard bytes.appendEndpoints(peers) else { return false }
             bytes.appendUInt64(nonce)
-        case .contentRequest(let requestID, let rootCID, let cids):
-            guard requestID != 0,
-                  MessageLimits.accepts(rootCID),
-                  cids.allSatisfy(MessageLimits.accepts) else { return false }
-            bytes.append(Tag.contentRequest.rawValue)
-            bytes.appendUInt64(requestID)
-            guard bytes.appendLengthPrefixedString(rootCID),
-                  bytes.appendCount(cids.count, max: MessageLimits.maxContentCIDCount) else { return false }
-            for cid in cids {
-                guard bytes.appendLengthPrefixedString(cid) else { return false }
-            }
-        case .contentResponse(let requestID, let entries):
-            guard requestID != 0,
-                  Self.contentResponseFits(entries, maxFrameSize: maxDataPayload) else { return false }
-            bytes.append(Tag.contentResponse.rawValue)
-            bytes.appendUInt64(requestID)
-            guard bytes.appendCount(entries.count, max: MessageLimits.maxContentEntryCount) else { return false }
-            for entry in entries {
-                guard bytes.appendLengthPrefixedString(entry.cid),
-                      bytes.appendLengthPrefixedData(entry.data, maxDataPayload: maxDataPayload) else { return false }
-            }
         case .contentUnavailable(let requestID):
             guard requestID != 0 else { return false }
             bytes.append(Tag.contentUnavailable.rawValue)
@@ -274,37 +236,6 @@ enum Message: Sendable {
         return true
     }
 
-    private static func contentResponseFits(
-        _ entries: [ContentEntry],
-        maxFrameSize: UInt32
-    ) -> Bool {
-        guard var remaining = contentResponsePayloadBudget(
-            for: entries.map(\.cid),
-            within: Int(maxFrameSize)
-        ) else { return false }
-        for entry in entries {
-            guard consume(entry.data.count, from: &remaining) else { return false }
-        }
-        return true
-    }
-
-    private static func contentResponsePayloadBudget(
-        for cids: [String],
-        within byteLimit: Int
-    ) -> Int? {
-        guard cids.count <= Int(MessageLimits.maxContentEntryCount) else { return nil }
-        var remaining = byteLimit
-        guard consume(1 + 8 + 2, from: &remaining) else { return nil }
-        for cid in cids {
-            let cidSize = cid.utf8.count
-            guard MessageLimits.accepts(cid),
-                  consume(2, from: &remaining),
-                  consume(cidSize, from: &remaining),
-                  consume(4, from: &remaining) else { return nil }
-        }
-        return remaining
-    }
-
     private static func consume(_ count: Int, from remaining: inout Int) -> Bool {
         guard count >= 0, count <= remaining else { return false }
         remaining -= count
@@ -342,21 +273,6 @@ enum Message: Sendable {
         case .neighbors:
             guard let peers = reader.readEndpoints(), let nonce = reader.readUInt64() else { return nil }
             return .neighbors(peers, nonce: nonce)
-        case .contentRequest:
-            guard let requestID = reader.readUInt64(), requestID != 0,
-                  let rootCID = reader.readString(),
-                  let cids = reader.readStrings(max: MessageLimits.maxContentCIDCount) else { return nil }
-            return .contentRequest(requestID: requestID, rootCID: rootCID, cids: cids)
-        case .contentResponse:
-            guard let requestID = reader.readUInt64(), requestID != 0,
-                  let count = reader.readUInt16(), count <= MessageLimits.maxContentEntryCount else { return nil }
-            var entries: [ContentEntry] = []
-            entries.reserveCapacity(min(Int(count), 64))
-            for _ in 0..<count {
-                guard let cid = reader.readString(), let data = reader.readData() else { return nil }
-                entries.append(ContentEntry(cid: cid, data: data))
-            }
-            return .contentResponse(requestID: requestID, entries: entries)
         case .contentUnavailable:
             guard let requestID = reader.readUInt64(), requestID != 0 else { return nil }
             return .contentUnavailable(requestID: requestID)
@@ -492,17 +408,6 @@ private extension DataReader {
                 expiresAt: expiresAt))
         }
         return records
-    }
-
-    mutating func readStrings(max: UInt16) -> [String]? {
-        guard let count = readUInt16(), count <= max else { return nil }
-        var strings: [String] = []
-        strings.reserveCapacity(min(Int(count), 64))
-        for _ in 0..<count {
-            guard let value = readString() else { return nil }
-            strings.append(value)
-        }
-        return strings
     }
 }
 

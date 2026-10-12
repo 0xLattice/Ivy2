@@ -120,7 +120,7 @@ bound exhaustion close it.
 - Canonical session metadata is limited to 64 KiB.
 - Strings, collections, connections, netgroups, pending requests, waiters,
   candidates, routing entries, provider hints, and relay routes are bounded.
-- Content framing overhead is subtracted before storage materializes bytes.
+- Framing overhead is subtracted from each Volume chunk before it is framed.
 - A complete Volume is at most 64 MiB and 65,535 members. Its ordered chunks
   share one request, root, authenticated endpoint session, and node run; partial
   assemblies reserve their declared size from a 128 MiB node-wide receive cap.
@@ -143,10 +143,9 @@ rather than becoming global blame.
 
 ## Application protocols
 
-Ivy's generic records and exact content exchange are enough to compose gossip,
+Ivy's generic records and Volume exchange are enough to compose gossip,
 sync, and retrieval. Broadcast messages announce gossip to current peers;
-directed messages carry sync control; content requests retrieve the selected
-bytes. Gossip identity, deduplication, forwarding, sync semantics, CID
+directed messages carry sync control; Volume requests retrieve the bytes. Gossip identity, deduplication, forwarding, sync semantics, CID
 validation, and storage remain caller policy.
 
 ## Routing and content
@@ -164,16 +163,8 @@ protocol. STUN contributes an observed host only; configure `externalAddress`
 with an IP literal when the externally reachable TCP port differs from
 `listenPort`.
 
-A content request is exactly:
-
-```text
-rootCID + deduplicated selected identifiers
-```
-
 Identifiers are non-empty ASCII wire strings, so equality is byte-exact without
-assigning them semantics. The source must return that set exactly once within the direct or relayed byte
-budget. Duplicate, extra, missing, oversized, unsolicited, and unexpected-peer
-responses are unavailable, never partial.
+assigning them semantics.
 
 A Volume request names only its root. The source returns one complete bounded
 Volume, which Ivy canonically orders and streams in sequential frames. Each
@@ -183,9 +174,8 @@ metadata, and malformed archives discard only that provider's attempt. Ivy
 returns no `AttributedVolumeResponse` until one archive is complete and contains
 the requested root. Identifiers and bytes remain opaque: Ivy neither validates
 content addressing nor interprets or traverses a DAG. A request waiting for
-capacity never times out. `requestTimeout` starts once a content request holds
-its serving slot, and once a Volume request holds both its slot and its byte
-reservation (its authorization callback runs before that, untimed); from then
+capacity never times out. `requestTimeout` starts once a Volume request holds
+both its slot and its byte reservation (its authorization callback runs before that, untimed); from then
 Ivy cancels serving at the deadline. Blocked writers release their reservation, while a storage
 callback that ignores cancellation remains counted until it actually exits.
 
@@ -206,13 +196,10 @@ what it still lacks as single Volumes. The result says whether the answer
 ended with the peer's end marker; whether to ask again a peer whose answer did
 not is the caller's to decide.
 
-Equal requests coalesce across cached providers, fresh discovery, fallback, and
-the wire request. `requestTimeout` bounds that whole fetch for its callers;
-timed-out backend or network work remains counted until it exits. A content
-selection asks known providers, then fresh discovery, then the peers already
-connected, under that deadline; a Volume fetch asks known providers, then the
-peers already connected, then fresh discovery, with no deadline over the whole
-fetch. Provider hints are bounded and expiring: each is a peer's own announcement or a
+A Volume fetch asks the node's own source, then known providers, then the
+peers already connected, then fresh discovery. `requestTimeout` bounds each
+request of it; there is no deadline over the whole fetch. A local read that is
+cancelled remains counted until it exits. Provider hints are bounded and expiring: each is a peer's own announcement or a
 referral from a lookup answer, never a note that a peer served the root; a
 source's referrals never evict an announcement. A failed local dial
 does not erase a hint, and a failed address does not suppress a healthy address

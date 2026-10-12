@@ -288,7 +288,7 @@ final class InboundFramingTests: XCTestCase {
         var generator = FramingSeededGenerator(seed: 0x4956_5908)
         let corpus = [
             Message.ping(nonce: 1).serialize(),
-            Message.contentRequest(requestID: 1, rootCID: "root", cids: ["child"]).serialize(),
+            Message.volumeRequest(requestID: 1, rootCID: "root").serialize(),
             Message.peerMessage(topic: "state", payload: Data([1, 2, 3])).serialize(),
         ]
         let sim = Simulation()

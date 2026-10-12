@@ -66,11 +66,6 @@ extension Simulation {
 }
 
 extension RequestResult {
-    var content: AttributedContentResponse? {
-        if case .content(let response) = self { return response }
-        return nil
-    }
-
     var volume: AttributedVolumeResponse? {
         if case .volume(let response) = self { return response }
         return nil

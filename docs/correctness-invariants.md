@@ -13,10 +13,10 @@ Authentication proves a peer key, never application authority.
 | IVY-007 | Work from an old run, operation, or authenticated session cannot mutate or reply through successor state. |
 | IVY-008 | Frames, fields, connections, pending work, routing, hints, routes, and all partial or queued inbound bytes are bounded. |
 | IVY-009 | Each node enforces its own frame-body cap (4 MiB default, operator-tunable, handshake-advertised); outbound never exceeds the peer's advertised cap (carrier-minimum on relay). One 64 KiB metadata cap applies on every route. |
-| IVY-010 | Exact route overhead is removed before a content source materializes bytes. |
-| IVY-011 | Content is request-correlated and exact, or unavailable; partial success is impossible. |
+| IVY-010 | Exact route overhead is removed from every Volume chunk before it is framed. |
+| IVY-011 | Retired with content selection. |
 | IVY-012 | Ivy treats non-empty ASCII wire identifiers and bytes as opaque and never traverses or stores a DAG. |
-| IVY-013 | Equal fetches coalesce across the whole bounded provider-search pipeline. |
+| IVY-013 | Retired with content selection. |
 | IVY-014 | Provider records are expiring hints and grant no possession, validity, or authority. |
 | IVY-015 | Public discovery returns admitted candidates; only authenticated promotion installs routing state, and there is no PEX. |
 | IVY-016 | Outbound relay initiation uses configured carriers; inbound offers grant transport only, every relayed session authenticates both endpoint identities end to end, and carrier forwarding is ordered, exact-session-bound, and deadline-bounded. |

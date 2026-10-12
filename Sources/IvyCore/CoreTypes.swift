@@ -80,8 +80,6 @@ public enum Request: Sendable, Equatable {
     case sendOnSession(AuthenticatedPeer, topic: String, payload: Data)
     case waitUntilWritable(PeerID)
     case waitUntilSessionWritable(AuthenticatedPeer)
-    case fetchContent(rootCID: String, cids: [String])
-    case fetchContentFrom(AuthenticatedPeer, rootCID: String, cids: [String])
     case fetchVolume(rootCID: String, maximumArchiveBytes: Int, maximumEntries: Int)
     case fetchVolumeFrom(
         AuthenticatedPeer, rootCID: String, maximumArchiveBytes: Int, maximumEntries: Int)
@@ -142,10 +140,8 @@ public enum Event: Sendable, Equatable {
 // MARK: - Effects
 
 public enum Job: Sendable, Equatable {
-    case readContent(rootCID: String, cids: [String], maxDataBytes: Int)
     case readVolume(rootCID: String, maxDataBytes: Int)
     case readVolumeBundle(rootCID: String)
-    case authorizeContent(AuthenticatedPeer, rootCID: String, cids: [String])
     case authorizeVolume(AuthenticatedPeer, rootCID: String)
 }
 
@@ -159,7 +155,6 @@ public enum RequestResult: Sendable, Equatable {
     case connect(ConnectOutcome)
     case send(SendMessageResult)
     case writable(Bool)
-    case content(AttributedContentResponse)
     case volume(AttributedVolumeResponse)
     case volumeBundle(AttributedVolumeBundleResponse)
     case endpoints([PeerEndpoint])

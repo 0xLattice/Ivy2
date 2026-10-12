@@ -435,7 +435,8 @@ final class SessionLifecycleSimulationTests: XCTestCase {
         let server = sim.node(
             mode: .privateNetwork, maxConnectionsPerNetgroup: 4, privateContentExchangeEnabled: true)
         let client = sim.node(mode: .privateNetwork, privateContentExchangeEnabled: true)
-        server.content = ["private-root": Data("root bytes".utf8), "private-child": Data("child bytes".utf8)]
+        let privateVolume = ["private-root": Data("root bytes".utf8), "private-child": Data("child bytes".utf8)]
+        server.volumes["private-root"] = privateVolume.map { ContentEntry(cid: $0.key, data: $0.value) }
         sim.connect(client, server)
 
         XCTAssertTrue(server.core.knownPeerEndpoints.isEmpty)
@@ -452,9 +453,12 @@ final class SessionLifecycleSimulationTests: XCTestCase {
         XCTAssertEqual(sim.writeCount(by: client), writesBefore)
         XCTAssertTrue(server.received.isEmpty)
 
-        let fetched = sim.await(.fetchContentFrom(
-            sim.session(client, to: server), rootCID: "private-root", cids: ["private-child"]), on: client)
-        XCTAssertEqual(fetched?.content?.entries, server.content)
+        let fetched = sim.await(
+            .fetchVolumeFrom(
+                sim.session(client, to: server),
+                rootCID: "private-root", maximumArchiveBytes: .max, maximumEntries: .max),
+            on: client)
+        XCTAssertEqual(fetched?.volume?.entries, privateVolume)
 
         // Overlay requests from a peer are dropped unanswered.
         let peer = HandPeer(sim, to: server, index: 1, host: "10.1.0.1")
@@ -1071,8 +1075,7 @@ final class SessionLifecycleSimulationTests: XCTestCase {
 
         // One of each kind of request still waiting.
         remote.stallsStorage = true
-        let fetch = sim.request(.fetchContentFrom(
-            sim.session(node, to: remote), rootCID: "root", cids: []), on: node)
+        let fetch = sim.fetchVolume("root", from: remote, on: node)
         let dial = sim.request(
             .connect(HandPeer.endpoint(sim, index: 2, host: "10.3.0.1")), on: node)
         sim.setRawStalled(true, raw.connection, at: node)
@@ -1085,7 +1088,7 @@ final class SessionLifecycleSimulationTests: XCTestCase {
 
         sim.stop(node)
 
-        XCTAssertEqual(sim.result(of: fetch, on: node)?.content, .empty)
+        XCTAssertEqual(sim.result(of: fetch, on: node)?.volume, .empty)
         XCTAssertEqual(sim.result(of: dial, on: node), .connect(.cancelled))
         XCTAssertEqual(sim.result(of: writable, on: node), .writable(false))
         XCTAssertEqual(
@@ -1100,7 +1103,7 @@ final class SessionLifecycleSimulationTests: XCTestCase {
         XCTAssertEqual(node.core.diagnostics.pendingRequests, 0)
         XCTAssertEqual(node.core.diagnostics.deadlines, 0)
         XCTAssertEqual(node.core.diagnostics.inboundBytesUsed, 0)
-        XCTAssertEqual(node.core.diagnostics.activeFetches, 0)
+        XCTAssertTrue(node.core.volumeFetches.isEmpty)
 
         // The other end is told, and nothing more comes out of the stopped node.
         let effects = sim.effects(of: node).count

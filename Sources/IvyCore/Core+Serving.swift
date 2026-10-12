@@ -1,7 +1,7 @@
 import Foundation
 import Tally
 
-/// One content, Volume or bundle request a peer made on one session.
+/// One Volume or bundle request a peer made on one session.
 struct InboundContentRequest: Hashable, Sendable {
     let peer: PeerID
     let link: LinkID
@@ -52,12 +52,10 @@ struct AbandonedJob: Sendable {
     var servingSlot: InboundContentRequest?
     var servingVolumeBytes = 0
     var localSlot = false
-    var fetchCount = false
 }
 
 enum JobOwner: Sendable {
     case serving(InboundContentRequest)
-    case contentFetch(ContentRequestKey)
     case volumeFetch(OpID)
     case abandoned(AbandonedJob)
 }
@@ -67,7 +65,6 @@ enum JobOwner: Sendable {
 /// it on in the same step.
 struct ServingRequest: Sendable {
     enum Kind: Sendable {
-        case content(key: ContentRequestKey, maxDataBytes: Int)
         case volume
         case bundle
     }
@@ -105,7 +102,7 @@ struct ServingRequest: Sendable {
     var chunkIndex = 0
     var chunkCount = 0
     var chunkPayloadBytes = 0
-    /// A single record waiting for the connection: a content response or a bundle's end.
+    /// A single record waiting for the connection: a bundle's end.
     var pendingMessage: Message?
 }
 
@@ -144,12 +141,9 @@ extension IvyCore {
         switch owner {
         case .serving(let request):
             servingJobFinished(request, job: id, result)
-        case .contentFetch(let key):
-            fetchLocalReadFinished(key, job: id, result)
         case .volumeFetch(let fetch):
             volumeFetchLocalReadFinished(fetch, job: id, result)
         case .abandoned(let hold):
-            if hold.fetchCount { activeFetchCount -= 1 }
             if hold.localSlot { activeLocalContentRequestCount -= 1 }
             if hold.servingVolumeBytes > 0 { releaseServingVolumeBytes(hold.servingVolumeBytes) }
             if let slot = hold.servingSlot { servingContentRequests.remove(slot) }
@@ -242,34 +236,6 @@ extension IvyCore {
 
     // MARK: - Admission
 
-    mutating func beginContentRequest(
-        requestID: UInt64,
-        rootCID: String,
-        cids: [String],
-        from ref: SessionRef
-    ) {
-        guard MessageLimits.accepts(rootCID),
-              cids.count <= Int(MessageLimits.maxContentCIDCount),
-              cids.allSatisfy(MessageLimits.accepts) else { return }
-        let key = ContentRequestKey(rootCID: rootCID, cids: cids)
-        let request = InboundContentRequest(peer: ref.key.peerID, link: ref.link, requestID: requestID)
-        guard let maxDataBytes = Message.contentResponseDataBudget(
-                for: key.requestedCIDs,
-                maxFrameSize: config.protocolMaxFrameSize,
-                relayed: links[ref.link]?.isDirect == false),
-              serving[request] == nil,
-              !servingContentRequests.contains(request) else {
-            _ = enqueue(.contentUnavailable(requestID: requestID), on: ref)
-            return
-        }
-        admit(ServingRequest(
-            request: request,
-            ref: ref,
-            rootCID: rootCID,
-            kind: .content(key: key, maxDataBytes: maxDataBytes),
-            volumeRoot: rootCID))
-    }
-
     mutating func beginVolumeRequest(
         requestID: UInt64,
         rootCID: String,
@@ -301,17 +267,6 @@ extension IvyCore {
         guard let entry = serving[request] else { return }
         guard isCurrent(entry.ref) else { return endServing(request) }
         switch entry.kind {
-        case .content(let key, _):
-            // `requestTimeout` runs from here: the request holds its capacity.
-            timers.set(.serving(request), at: now.uptime + config.requestTimeout)
-            guard hasContentSource, let session = session(entry.ref) else {
-                return refuseServing(request)
-            }
-            let job = startJob(
-                .authorizeContent(
-                    authenticatedPeer(session), rootCID: entry.rootCID, cids: key.requestedCIDs),
-                owner: .serving(request))
-            serving[request]?.phase = .authorizing(job)
         case .volume:
             startServingVolume(request)
         case .bundle:
@@ -344,15 +299,8 @@ extension IvyCore {
         let phase = entry.phase
         entry.phase = .idle
         serving[request] = entry
-        if entry.timedOut {
-            // A content request that ran out of time is told so, unless the
-            // deadline passed while it was being authorized and it was let
-            // through: then nothing was read and nothing is said. A Volume's
-            // requester keeps its own deadline.
-            guard case .content = entry.kind else { return endServing(request) }
-            if case .authorizing = phase, result == .authorized(true) { return endServing(request) }
-            return refuseServing(request)
-        }
+        // A Volume's requester keeps its own deadline.
+        if entry.timedOut { return endServing(request) }
         switch phase {
         case .listing(job):
             guard case .roots(let roots) = result, roots.first == entry.rootCID else {
@@ -365,45 +313,19 @@ extension IvyCore {
             startServingVolume(request)
 
         case .authorizing(job):
-            let authorized = result == .authorized(true)
-            switch entry.kind {
-            case .content(let key, let maxDataBytes):
-                guard authorized else { return refuseServing(request) }
-                guard isCurrent(entry.ref) else { return endServing(request) }
-                let read = startJob(
-                    .readContent(
-                        rootCID: entry.rootCID, cids: key.requestedCIDs, maxDataBytes: maxDataBytes),
-                    owner: .serving(request))
-                serving[request]?.phase = .reading(read)
-            case .volume, .bundle:
-                guard authorized else { return volumeFinished(request, .notSent) }
-                guard isCurrent(entry.ref) else { return volumeFinished(request, .interrupted) }
-                if tryReserveServingVolumeRead() {
-                    beginVolumeRead(request)
-                } else {
-                    serving[request]?.phase = .waitingRead
-                    servingVolumeReadWaiters.append(request)
-                }
+            guard result == .authorized(true) else { return volumeFinished(request, .notSent) }
+            guard isCurrent(entry.ref) else { return volumeFinished(request, .interrupted) }
+            if tryReserveServingVolumeRead() {
+                beginVolumeRead(request)
+            } else {
+                serving[request]?.phase = .waitingRead
+                servingVolumeReadWaiters.append(request)
             }
 
         case .reading(job):
             var entries: [ContentEntry] = []
             if case .entries(let read) = result { entries = read }
-            switch entry.kind {
-            case .content(let key, let maxDataBytes):
-                guard isCurrent(entry.ref) else { return endServing(request) }
-                guard let byCID = validatedContent(entries, for: key, maxDataBytes: maxDataBytes) else {
-                    return refuseServing(request)
-                }
-                let response = Message.contentResponse(
-                    requestID: request.requestID,
-                    entries: key.requestedCIDs.compactMap { cid in
-                        byCID[cid].map { ContentEntry(cid: cid, data: $0) }
-                    })
-                sendServingMessage(request, response)
-            case .volume, .bundle:
-                volumeRead(request, entries)
-            }
+            volumeRead(request, entries)
 
         default:
             return
@@ -610,7 +532,6 @@ extension IvyCore {
             serving[request]?.timedOut = true
             emit(.cancelJob(job))
         case .sending:
-            if case .content = entry.kind { return refuseServing(request) }
             endServing(request)
         case .waitingSlot, .waitingRead, .idle:
             return
@@ -660,23 +581,5 @@ extension IvyCore {
             admitted.append(servingVolumeReadWaiters.removeFirst())
         }
         for request in admitted { beginVolumeRead(request) }
-    }
-
-    func validatedContent(
-        _ entries: [ContentEntry],
-        for key: ContentRequestKey,
-        maxDataBytes: Int
-    ) -> [String: Data]? {
-        guard entries.count == key.requestedCIDs.count else { return nil }
-        var missing = key.requestedSet
-        var remaining = maxDataBytes
-        var result: [String: Data] = [:]
-        for entry in entries {
-            guard missing.remove(entry.cid) != nil,
-                  entry.data.count <= remaining else { return nil }
-            remaining -= entry.data.count
-            result[entry.cid] = entry.data
-        }
-        return missing.isEmpty ? result : nil
     }
 }

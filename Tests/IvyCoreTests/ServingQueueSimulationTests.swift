@@ -352,7 +352,6 @@ final class ServingQueueSimulationTests: XCTestCase {
         let sim = Simulation()
         let server = sim.node(requestTimeout: .seconds(3_600), maxConcurrentContentRequests: 1)
         server.volumes["root"] = servingSmallVolume("root")
-        server.content["root"] = Data("content".utf8)
         server.bundles["root"] = ["root"]
         let peer = ServingRawPeer(sim, to: server, index: 1)
         let other = ServingRawPeer(sim, to: server, index: 2)
@@ -366,16 +365,15 @@ final class ServingQueueSimulationTests: XCTestCase {
 
         // The same ID again, whatever kind of request reuses it.
         peer.send(.volumeRequest(requestID: 1, rootCID: "root"))
-        peer.send(.contentRequest(requestID: 1, rootCID: "root", cids: []))
         peer.send(.volumeBundleRequest(requestID: 1, rootCID: "root"))
         peer.send(.volumeRequest(requestID: 2, rootCID: "root"))
-        peer.send(.contentRequest(requestID: 2, rootCID: "root", cids: []))
+        peer.send(.volumeBundleRequest(requestID: 2, rootCID: "root"))
         // Another peer's request with the same ID is its own request.
         other.send(.volumeRequest(requestID: 1, rootCID: "root"))
         sim.runHoldingReads(server)
         peer.read()
         other.read()
-        XCTAssertEqual(peer.unavailable, [1, 1, 1, 2, 2])
+        XCTAssertEqual(peer.unavailable, [1, 1, 2, 2])
         XCTAssertEqual(other.unavailable, [])
         XCTAssertEqual(server.core.diagnostics.servingSlotsHeld, 1)
         XCTAssertEqual(server.core.diagnostics.servingRequestsWaiting, 2)
@@ -385,18 +383,19 @@ final class ServingQueueSimulationTests: XCTestCase {
         peer.read()
         other.read()
         // The refusals did not disturb the requests they duplicated.
-        XCTAssertEqual(peer.unavailable, [1, 1, 1, 2, 2])
+        XCTAssertEqual(peer.unavailable, [1, 1, 2, 2])
         XCTAssertNotNil(peer.archive(requestID: 1, rootCID: "root"))
         XCTAssertNotNil(peer.archive(requestID: 2, rootCID: "root"))
         XCTAssertNotNil(other.archive(requestID: 1, rootCID: "root"))
         XCTAssertServingIdle(server)
 
         // Once answered, the ID is free again.
-        peer.send(.contentRequest(requestID: 1, rootCID: "root", cids: []))
+        XCTAssertEqual(peer.chunks.map(\.requestID), [1, 2])
+        peer.send(.volumeRequest(requestID: 1, rootCID: "root"))
         sim.run(for: .seconds(1))
         peer.read()
-        XCTAssertEqual(peer.contentResponses.map(\.requestID), [1])
-        XCTAssertEqual(peer.unavailable, [1, 1, 1, 2, 2])
+        XCTAssertEqual(peer.chunks.map(\.requestID), [1, 2, 1])
+        XCTAssertEqual(peer.unavailable, [1, 1, 2, 2])
         XCTAssertServingIdle(server)
     }
 
@@ -445,7 +444,6 @@ final class ServingQueueSimulationTests: XCTestCase {
         let fixture = ServingFixture(clients: 1, maxConcurrentContentRequests: 1)
         let server = fixture.server
         server.volumes["mine"] = servingSmallVolume("mine")
-        server.content["mine"] = Data("mine".utf8)
 
         let local = fixture.sim.request(
             .fetchVolume(rootCID: "mine", maximumArchiveBytes: .max, maximumEntries: .max), on: server)
@@ -461,9 +459,10 @@ final class ServingQueueSimulationTests: XCTestCase {
 
         // With no slot free, a second local read does not queue for one:
         // it never reaches storage.
-        let second = fixture.sim.request(.fetchContent(rootCID: "mine", cids: []), on: server)
+        let second = fixture.sim.request(
+            .fetchVolume(rootCID: "mine", maximumArchiveBytes: .max, maximumEntries: .max), on: server)
         fixture.sim.runHoldingReads(server)
-        XCTAssertEqual(server.contentReads.count, 0)
+        XCTAssertEqual(server.volumeReads, ["mine"])
         XCTAssertEqual(fixture.waiting, 1)
 
         fixture.sim.releaseNextRead(server)
@@ -482,19 +481,22 @@ final class ServingQueueSimulationTests: XCTestCase {
 
     // A local read takes a free slot even while that slot's would-be waiters
     // do not exist yet: with a slot free it never waits behind anyone.
-    func testLocalContentReadHoldsASlotRemoteRequestsWaitFor() {
+    func testLocalReadHoldsASlotRemoteRequestsWaitFor() {
         let fixture = ServingFixture(clients: 1, maxConcurrentContentRequests: 2)
         let server = fixture.server
-        server.content["mine"] = Data("mine".utf8)
+        server.volumes["mine"] = servingSmallVolume("mine")
         _ = fixture.fetch(0, "holder")
-        let local = fixture.sim.request(.fetchContent(rootCID: "mine", cids: []), on: server)
+        let local = fixture.sim.request(
+            .fetchVolume(rootCID: "mine", maximumArchiveBytes: .max, maximumEntries: .max), on: server)
         fixture.sim.runHoldingReads(server)
-        XCTAssertEqual(server.contentReads.map(\.rootCID), ["mine"])
+        XCTAssertEqual(server.volumeReads, ["holder", "mine"])
         XCTAssertEqual(server.core.diagnostics.servingSlotsHeld, 2)
         let waiter = fixture.fetch(0, "waiter")
         XCTAssertEqual(fixture.waiting, 1)
         fixture.open()
-        XCTAssertEqual(fixture.sim.result(of: local, on: server)?.content?.entries, ["mine": Data("mine".utf8)])
+        XCTAssertEqual(
+            fixture.sim.volume(local, on: server)?.entries,
+            Dictionary(uniqueKeysWithValues: servingSmallVolume("mine").map { ($0.cid, $0.data) }))
         XCTAssertTrue(fixture.served(waiter, 0, "waiter"))
         XCTAssertServingIdle(server)
     }

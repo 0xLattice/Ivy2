@@ -38,20 +38,19 @@ encryption or forward secrecy.
 `IvyMode.overlay` uses authenticated Kademlia discovery. `.privateNetwork`
 accepts authenticated direct peers but disables discovery, routing, providers,
 relay, and broadcast; applications use directed messages for their own private
-protocol. Exact-CID content exchange is also disabled unless
+protocol. Volume exchange is also disabled unless
 `privateContentExchangeEnabled` is explicitly set. A private source should use
-`authorizesContentRequest` when only some authenticated peers may read it.
+`authorizesVolumeRequest` when only some authenticated peers may read it.
 `.pinned(peer:)` accepts one endpoint identity and disables public discovery.
 Configured carriers govern outbound relay initiation; inbound offers grant
 transport only and never turn a carrier into an endpoint peer.
 
 ## Network roles
 
-Ivy supplies three small primitives that applications compose:
+Ivy supplies a few small primitives that applications compose:
 
 - `broadcastMessage` announces gossip to the currently connected peers.
 - `sendMessage` carries directed sync requests and responses.
-- `fetchContent` retrieves one exact content selection from available providers.
 - `fetchVolume` retrieves one complete bounded Volume from one provider.
 - `fetchVolumeBundle` retrieves, with one request, the Volumes a named peer bundles under a root.
 
@@ -59,15 +58,14 @@ The caller defines gossip IDs, deduplication, forwarding, sync order, and CID
 validation. Ivy authenticates the sender, bounds each operation, and keeps these
 application protocols independent.
 
-## Exact content
+## Volumes
 
 Register a source:
 
 ```swift
 public protocol IvyContentSource: Sendable {
-    func content(
+    func volume(
         rootCID: String,
-        cids: [String],
         maxDataBytes: Int
     ) async -> [ContentEntry]
 }
@@ -75,33 +73,22 @@ public protocol IvyContentSource: Sendable {
 await ivy.setContentSource(store)
 ```
 
-`cids` is the complete canonical selection and includes `rootCID`. Return every
-entry exactly once within `maxDataBytes`, or return `[]`. Wire identifiers are
-non-empty ASCII strings, which keeps equality byte-exact; Ivy does not parse
-their meaning.
+Return every entry of the complete Volume rooted at `rootCID`, the root's own
+included, or return `[]`. Wire identifiers are non-empty ASCII strings, which
+keeps equality byte-exact; Ivy does not parse their meaning.
 
-Fetch the same explicit selection:
+Fetch it:
 
 ```swift
-let response = await ivy.fetchContent(
-    rootCID: rootCID,
-    cids: selectedCIDs
-)
+let response = await ivy.fetchVolume(rootCID: rootCID)
 ```
 
-Ivy returns the whole selection or `.empty`; it never follows links or returns a
-partial success. `servedBy` identifies the authenticated remote endpoint and is
-`nil` for a local result. The caller validates identifiers and bytes before
-storage.
-
-Selections must fit one frame body — 4 MiB by default, or the larger size a
-connection negotiates when both peers raise their local `protocolMaxFrameSize`.
-Larger application objects must be split by caller-defined boundaries.
-
-`fetchVolume(rootCID:)` is the complete-boundary counterpart. Ivy streams one
-Volume across ordered frames (4 MiB each by default), up to 64 MiB and 65,535 entries, and returns
-only after the whole archive is present. This does not make Ivy a DAG layer:
-the caller still validates every identifier and byte before storage.
+Ivy streams one Volume across ordered frames (4 MiB each by default), up to
+64 MiB and 65,535 entries, and returns only after the whole archive is present,
+or `.empty`; it never follows links or returns a partial Volume. `servedBy`
+identifies the authenticated remote endpoint and is `nil` for a local result.
+This does not make Ivy a DAG layer: the caller validates every identifier and
+byte before storage.
 
 Provider records are expiring routing hints, not proof of possession, validity,
 pinning, or authority. A record is what a peer announced for itself or what a
@@ -162,7 +149,7 @@ print(sim.traceDigest)
 | Session authentication and replay protection | Process authorization and protocol meaning |
 | Connection, frame, request, route, and lookup limits | Application batching and policy |
 | Endpoint routing and configured carriers | Service or chain topology |
-| Exact opaque content transfer | CID validation, DAG interpretation, and storage |
+| Opaque Volume transfer | CID validation, DAG interpretation, and storage |
 | Signed sender attribution | Consensus, retention, fees, and settlement |
 
 ## Documentation

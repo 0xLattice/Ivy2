@@ -180,17 +180,11 @@ public actor Ivy {
         jobTasks[id] = Task { [weak self] in
             let result: JobResult
             switch job {
-            case let .readContent(rootCID, cids, maxDataBytes):
-                result = .entries(await source?.content(
-                    rootCID: rootCID, cids: cids, maxDataBytes: maxDataBytes) ?? [])
             case let .readVolume(rootCID, maxDataBytes):
                 result = .entries(await source?.volume(
                     rootCID: rootCID, maxDataBytes: maxDataBytes) ?? [])
             case .readVolumeBundle(let rootCID):
                 result = .roots(await source?.volumeBundle(rootCID: rootCID) ?? [])
-            case let .authorizeContent(peer, rootCID, cids):
-                result = .authorized(await source?.authorizesContentRequest(
-                    from: peer, rootCID: rootCID, cids: cids) ?? false)
             case let .authorizeVolume(peer, rootCID):
                 result = .authorized(await source?.authorizesVolumeRequest(
                     from: peer, rootCID: rootCID) ?? false)
@@ -368,27 +362,6 @@ public actor Ivy {
     }
 
     // MARK: - Content
-
-    /// Fetches an exact content selection. The root is always included; `cids`
-    /// names any additional entries. The response is attributed but unvalidated.
-    public func fetchContent(rootCID: String, cids: [String] = []) async -> AttributedContentResponse {
-        guard case .content(let response) = await self.await(
-            .fetchContent(rootCID: rootCID, cids: cids)) else { return .empty }
-        return response
-    }
-
-    /// Fetches one exact selection from the specified authenticated endpoint
-    /// session. A replacement connection for the same key cannot receive or
-    /// satisfy the request.
-    public func fetchContent(
-        rootCID: String,
-        cids: [String] = [],
-        from peer: AuthenticatedPeer
-    ) async -> AttributedContentResponse {
-        guard case .content(let response) = await self.await(
-            .fetchContentFrom(peer, rootCID: rootCID, cids: cids)) else { return .empty }
-        return response
-    }
 
     /// Fetches one complete Volume. Provider selection may use any connected
     /// endpoint advertising the root.

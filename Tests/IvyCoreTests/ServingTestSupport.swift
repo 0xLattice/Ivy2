@@ -155,13 +155,6 @@ final class ServingRawPeer {
         }
     }
 
-    var contentResponses: [(requestID: UInt64, entries: [ContentEntry])] {
-        inbox.compactMap {
-            if case .contentResponse(let requestID, let entries) = $0 { return (requestID, entries) }
-            return nil
-        }
-    }
-
     /// The order in which answers to requests arrived: one entry per request,
     /// at its first record.
     var answeredRequestIDs: [UInt64] {
@@ -171,7 +164,6 @@ final class ServingRawPeer {
             let id: UInt64
             switch message {
             case .volumeChunk(let requestID, _, _, _, _, _, _): id = requestID
-            case .contentResponse(let requestID, _): id = requestID
             case .contentUnavailable(let requestID): id = requestID
             case .volumeBundleEnd(let requestID): id = requestID
             default: continue
@@ -241,22 +233,6 @@ extension Simulation.Node {
         }
     }
 
-    var contentAuthorizations: [String] {
-        startedJobs.compactMap {
-            if case .authorizeContent(_, let rootCID, _) = $0.job { return rootCID }
-            return nil
-        }
-    }
-
-    var contentReads: [(rootCID: String, cids: [String], maxDataBytes: Int)] {
-        startedJobs.compactMap {
-            if case .readContent(let rootCID, let cids, let maxDataBytes) = $0.job {
-                return (rootCID, cids, maxDataBytes)
-            }
-            return nil
-        }
-    }
-
     /// The jobs storage is holding, oldest first.
     var servingStalledJobs: [(id: JobID, job: Job)] {
         stalledJobs.map { ($0.0, $0.1) }
@@ -265,15 +241,10 @@ extension Simulation.Node {
     /// What this node's store answers a job with.
     func servingAnswer(_ job: Job) -> JobResult {
         switch job {
-        case .readContent(_, let cids, _):
-            let entries = cids.compactMap { cid in content[cid].map { ContentEntry(cid: cid, data: $0) } }
-            return .entries(entries.count == cids.count ? entries : [])
         case .readVolume(let rootCID, _):
             return .entries(volumes[rootCID] ?? [])
         case .readVolumeBundle(let rootCID):
             return .roots(bundles[rootCID] ?? [])
-        case .authorizeContent(let peer, let rootCID, _):
-            return .authorized(authorize(peer, rootCID))
         case .authorizeVolume(let peer, let rootCID):
             return .authorized(authorize(peer, rootCID))
         }
@@ -282,8 +253,8 @@ extension Simulation.Node {
 
 func servingJobIsRead(_ job: Job) -> Bool {
     switch job {
-    case .readContent, .readVolume: return true
-    case .readVolumeBundle, .authorizeContent, .authorizeVolume: return false
+    case .readVolume: return true
+    case .readVolumeBundle, .authorizeVolume: return false
     }
 }
 
@@ -308,12 +279,6 @@ extension Simulation {
         node.stalledJobs = kept
         for (id, job) in answered { send(.jobFinished(id, node.servingAnswer(job)), to: node) }
         return answered.count
-    }
-
-    /// Answers one held job with a result of the test's choosing.
-    func answerStalledJob(_ node: Node, _ id: JobID, with result: JobResult) {
-        node.stalledJobs.removeAll { $0.0 == id }
-        send(.jobFinished(id, result), to: node)
     }
 
     /// Runs with `node`'s reads held and every other job answered: a
