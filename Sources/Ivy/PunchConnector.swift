@@ -31,9 +31,12 @@ public protocol PunchSocket: Sendable {
     /// The port the peer is to aim at, on each address this node offers.
     var port: UInt16 { get }
     /// Tries the peer's candidates until one stream to it exists or
-    /// `deadline` passes. The peer is doing the same at the same moment.
+    /// `deadline` passes. The peer is doing the same at the same moment,
+    /// with the other value of `initiator`: the end that will start the
+    /// handshake, for a transport whose two ends are not alike.
     func connect(
         to candidates: [PunchCandidate],
+        initiator: Bool,
         deadline: ContinuousClock.Instant
     ) async -> (any TransportConnection)?
     /// Releases everything but a stream `connect` returned.
@@ -351,10 +354,11 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
     /// Both ends are here at about the same moment.
     private func dial(_ attempt: Attempt) async {
         let (sockets, remote) = lock.withLock { (attempt.sockets, attempt.remote) }
+        let initiator = offers(attempt.peer)
         let deadline = ContinuousClock.now + options.dialWindow
         let stream = await withTaskGroup(of: (any TransportConnection)?.self) { group in
             for socket in sockets {
-                group.addTask { await socket.connect(to: remote, deadline: deadline) }
+                group.addTask { await socket.connect(to: remote, initiator: initiator, deadline: deadline) }
             }
             var first: (any TransportConnection)?
             for await stream in group {

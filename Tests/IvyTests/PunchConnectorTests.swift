@@ -35,7 +35,9 @@ private struct NoPath: PunchTransport {
 
     struct Socket: PunchSocket {
         let port: UInt16 = 9
-        func connect(to candidates: [PunchCandidate], deadline: ContinuousClock.Instant) async -> (any TransportConnection)? {
+        func connect(
+            to candidates: [PunchCandidate], initiator: Bool, deadline: ContinuousClock.Instant
+        ) async -> (any TransportConnection)? {
             try? await Task.sleep(until: deadline, clock: .continuous)
             return nil
         }
