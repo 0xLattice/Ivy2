@@ -207,7 +207,7 @@ extension IvyCore {
             direction: .initiator(expected: expected, routeBinding: routeBinding),
             helloInitiator: signed,
             op: op)
-        guard case .sent = sendSessionRecord(.helloInitiator(signed), on: id) else {
+        guard case .sent = sendSessionRecord(.helloInitiator(signed), on: id, reserve: true) else {
             failPendingSession(id)
             return
         }
@@ -294,7 +294,7 @@ extension IvyCore {
             pending.remoteKey = signed.hello.initiator
             pending.remoteMetadata = remoteMetadata
             pendingSessions[id] = pending
-            guard case .sent = sendSessionRecord(.helloResponder(signedResponder), on: id) else {
+            guard case .sent = sendSessionRecord(.helloResponder(signedResponder), on: id, reserve: true) else {
                 failPendingSession(id)
                 return
             }
@@ -329,7 +329,7 @@ extension IvyCore {
             pending.remoteKey = expected
             pending.remoteMetadata = remoteMetadata
             pendingSessions[id] = pending
-            guard case .sent = sendSessionRecord(.finish(finish), on: id) else {
+            guard case .sent = sendSessionRecord(.finish(finish), on: id, reserve: true) else {
                 failPendingSession(id)
                 return
             }
@@ -660,16 +660,22 @@ extension IvyCore {
 
     /// Signs and sends `message` on exactly the session `ref` names.
     @discardableResult
-    mutating func enqueue(_ message: Message, on ref: SessionRef) -> SendMessageResult {
+    /// `reserve` is set by a caller carrying another record inside this one;
+    /// otherwise the message itself says whether it may use the reserve.
+    mutating func enqueue(
+        _ message: Message, on ref: SessionRef, reserve: Bool? = nil
+    ) -> SendMessageResult {
         guard isCurrent(ref) else { return .notConnected }
         let payload = message.serialize(maxFrameSize: effectiveOutboundFrameSize(for: ref.link))
         guard !payload.isEmpty else { return .locallyRejected }
-        return enqueuePayload(payload, on: ref)
+        return enqueuePayload(payload, on: ref, reserve: reserve ?? message.usesWriteReserve)
     }
 
-    mutating func enqueuePayload(_ payload: Data, on ref: SessionRef) -> SendMessageResult {
+    mutating func enqueuePayload(
+        _ payload: Data, on ref: SessionRef, reserve: Bool = false
+    ) -> SendMessageResult {
         guard isCurrent(ref), let session = sessions[ref.key] else { return .notConnected }
-        switch sessionRecordReadiness(on: ref.link) {
+        switch sessionRecordReadiness(on: ref.link, reserve: reserve) {
         case .sent:
             break
         case .backpressured:
@@ -686,7 +692,7 @@ extension IvyCore {
             sequence: sequence,
             payload: payload,
             with: scheme) else { return .locallyRejected }
-        switch sendSessionRecord(.data(record), on: ref.link) {
+        switch sendSessionRecord(.data(record), on: ref.link, reserve: reserve) {
         case .sent:
             // The send may have ended the session it travelled on.
             guard sessions[ref.key]?.link == ref.link else { return .notConnected }
@@ -704,27 +710,30 @@ extension IvyCore {
             route: links[ref.link]?.route ?? .direct)
     }
 
-    mutating func sendSessionRecord(_ record: SessionWireRecord, on id: LinkID) -> LinkSendResult {
+    mutating func sendSessionRecord(
+        _ record: SessionWireRecord, on id: LinkID, reserve: Bool = false
+    ) -> LinkSendResult {
         let payload = record.serialize(maxPayload: effectiveOutboundFrameSize(for: id))
         guard !payload.isEmpty else { return .locallyRejected }
         guard let link = links[id] else { return .notConnected }
         switch link.transport {
         case .direct:
-            return sendSerializedRecord(payload, on: id)
+            return sendSerializedRecord(payload, on: id, reserve: reserve)
         case .relayed(let routeID, let carrier):
             guard installedRoutes[routeID]?.carrier == carrier else { return .notConnected }
             return sendRelayControlResult(
                 .relayPacket(routeID: routeID, opaqueEndpointRecord: payload),
-                to: carrier)
+                to: carrier,
+                reserve: reserve)
         }
     }
 
     /// `.sent` here means ready to send.
-    func sessionRecordReadiness(on id: LinkID) -> LinkSendResult {
+    func sessionRecordReadiness(on id: LinkID, reserve: Bool = false) -> LinkSendResult {
         guard let target = readinessLink(for: id), let link = links[target] else {
             return .notConnected
         }
-        return link.writable ? .sent : .backpressured
+        return link.hasRoom(reserve: reserve) ? .sent : .backpressured
     }
 
     func directRelayCarrierSession(for carrier: PeerKey) -> Session? {
