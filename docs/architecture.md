@@ -36,7 +36,7 @@ What the old implementation expressed with `await` is state in the core:
 | 13 one-shot timers and 2 repeating ones | One deadline table; `tick` expires what has passed, and each step emits one `wakeAt` |
 | Awaiting the delegate inline | `deliver(token, …)`; the connection's next record is held, and the connection not read, until `delivered(token)` |
 | A lock-shared inbound byte budget | Counters charged as bytes join a frame and released when its record has been handled; exhaustion emits `pauseReading`, release emits `resumeReading` |
-| Waiting on channel writability | The core counts what it wrote since the last `writable(conn)` and holds chunk cursors, relay forwards and application waiters past 64 KiB |
+| Waiting on channel writability | The core counts what it wrote since the last `writable(conn)` and holds chunk cursors, relay forwards, Volume requests and application waiters past 64 KiB. Keepalives, "not available", handshake and relay control records are still written, from a reserve of 64 KiB more, so a peer waiting on one is not left to time out while a Volume is in flight |
 | Task groups in a lookup | A stored query: candidates, who was asked, the round, what is outstanding |
 | A task per served request | A serving state with an explicit phase; a granted slot advances it in the same step |
 | Run and operation generations | Nothing: a stopped run's state is gone, and a late event names an unknown identifier |

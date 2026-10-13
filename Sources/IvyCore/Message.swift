@@ -92,6 +92,17 @@ enum Message: Sendable {
         }
     }
 
+    /// Small records a peer is waiting on, written from a link's reserve
+    /// when it is past its high-water mark.
+    var usesWriteReserve: Bool {
+        switch self {
+        case .ping, .pong, .contentUnavailable, .relayAccept, .relayReady, .relayClose:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func volumeChunkDataBudget(
         rootCID: String,
         maxFrameSize: UInt32,

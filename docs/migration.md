@@ -53,6 +53,7 @@ These are the places where 2.0 does not do exactly what 15.0.1 did.
 | Other traffic from a configured carrier | A violation: the session ended and did not reconnect. A relay-enabled overlay node's routing refresh, provider queries or broadcast were enough to trigger it | Dropped. The carrier cannot know it was configured as one, so its session stays up for keepalives and relay control |
 | Two Volume fetches needing the same unconnected provider | The second found the first's dial in progress and returned empty | The second waits for that dial and is served |
 | A Volume request for a link with no room | Answered empty at once, as if no peer held the Volume | Waits for the link, up to `requestTimeout` |
+| A keepalive, "not available" or relay control record for a link past its write mark | Dropped whenever the socket was not writable | Written from a reserve of one more mark, so it is dropped only when the transport has stopped draining. 2.0 and 2.1 dropped it whenever 64 KiB had been written since the last flush report, which is most of the time while a Volume is being served |
 | A second session with a peer that already has one | The session with the smaller ID was kept, whatever each ran over | A direct session is kept over a relayed one; between two of a kind, the smaller ID. A connection supplied to `connect(to:over:)` for a peer reached through a carrier therefore replaces the relayed session |
 | Stale completions | Rejected by run and operation generations | Cannot occur: stop clears the state and identifiers are not reused |
 
