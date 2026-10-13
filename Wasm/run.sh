@@ -3,10 +3,12 @@
 #
 #   1. the core's whole test suite, compiled to Wasm and run under the
 #      toolchain's Wasm runtime;
-#   2. the probe, built natively and for Wasm, must print the same lines.
+#   2. the probe, built natively and for Wasm, must print the same lines;
+#   3. the core as a module (IvyWasm), driven by the JavaScript shell in
+#      Web/ through its own tests.
 #
 # Needs a swift.org toolchain with its matching Wasm SDK (not Xcode's), and
-# Node for step 2. Set IVY_WASM_SDK to the SDK's id, as `swift sdk list`
+# Node 22 or later for steps 2 and 3. Set IVY_WASM_SDK to the SDK's id, as `swift sdk list`
 # prints it. Set SWIFT to run a particular toolchain, for example
 # SWIFT="swiftly run +6.4.1 swift".
 set -eu
@@ -35,11 +37,17 @@ if ! cmp -s Wasm/probe/.build/native.out Wasm/probe/.build/wasm.out; then
 fi
 echo "PASS: the native and WebAssembly builds agree"
 
+echo "== the module, driven from JavaScript"
+SWIFT=$SWIFT IVY_WASM_SDK=$SDK Web/build.sh
+(cd Web && npm test)
+
 size() { wc -c < "$1" | awk '{ printf "%.2f MiB", $1 / 1048576 }'; }
-echo "probe.wasm: $(size "$wasm")"
-if command -v wasm-opt > /dev/null 2>&1; then
-    wasm-opt "$wasm" --strip-debug --strip-dwarf --strip-producers -Os -o "$wasm.opt"
-    echo "optimised:  $(size "$wasm.opt")"
-    gzip -9 -c "$wasm.opt" > "$wasm.opt.gz"
-    echo "gzip:       $(size "$wasm.opt.gz")"
-fi
+for wasm in "$wasm" Web/dist/ivy.wasm; do
+    echo "$(basename "$wasm"): $(size "$wasm")"
+    if command -v wasm-opt > /dev/null 2>&1; then
+        wasm-opt "$wasm" --strip-debug --strip-dwarf --strip-producers -Os -o "$wasm.opt"
+        echo "  optimised: $(size "$wasm.opt")"
+        gzip -9 -c "$wasm.opt" > "$wasm.opt.gz"
+        echo "  gzip:      $(size "$wasm.opt.gz")"
+    fi
+done

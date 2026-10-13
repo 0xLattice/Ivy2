@@ -53,7 +53,17 @@ var targets: [Target] = [
     ),
 ]
 
-if !coreOnly {
+if coreOnly {
+    // The core behind a C ABI, for a JavaScript shell. A reactor has no
+    // `main` to run: its exports are called for as long as the host likes.
+    targets.append(.executableTarget(
+        name: "IvyWasm",
+        dependencies: ["IvyCore"],
+        linkerSettings: [
+            .unsafeFlags(["-Xclang-linker", "-mexec-model=reactor"], .when(platforms: [.wasi])),
+        ]
+    ))
+} else {
     products.insert(.library(name: "Ivy", targets: ["Ivy"]), at: 0)
     products.insert(.library(name: "IvyWebSocket", targets: ["IvyWebSocket"]), at: 1)
     dependencies.append(.package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"))
