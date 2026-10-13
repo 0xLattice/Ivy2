@@ -52,6 +52,7 @@ These are the places where 2.0 does not do exactly what 15.0.1 did.
 | Relay forwarding wait | `Task.sleep(for:)` raced against writability | A stored deadline. This removes the one use of `Task.sleep(for:)`, which lattice-node bans under Swift 6.3 optimisation |
 | Other traffic from a configured carrier | A violation: the session ended and did not reconnect. A relay-enabled overlay node's routing refresh, provider queries or broadcast were enough to trigger it | Dropped. The carrier cannot know it was configured as one, so its session stays up for keepalives and relay control |
 | Two Volume fetches needing the same unconnected provider | The second found the first's dial in progress and returned empty | The second waits for that dial and is served |
+| A Volume request for a link with no room | Answered empty at once, as if no peer held the Volume | Waits for the link, up to `requestTimeout` |
 | Stale completions | Rejected by run and operation generations | Cannot occur: stop clears the state and identifiers are not reused |
 
 One documentation fix: 15.0.1's architecture doc said that exhausting the
