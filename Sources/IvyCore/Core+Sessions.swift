@@ -220,6 +220,12 @@ extension IvyCore {
         removeLink(id, notifyTransport: true)
         if let peer = pending.remoteKey { updateResponderWaiter(for: peer) }
         if let op = pending.op { authResults.append((op, false)) }
+        switch pending.direction {
+        case .initiator(let expected, _):
+            noteAttemptEnded(for: expected)
+        case .responder:
+            if let peer = pending.remoteKey { noteAttemptEnded(for: peer) }
+        }
     }
 
     mutating func handleSessionRecord(_ bytes: Data, on id: LinkID) {
@@ -442,6 +448,7 @@ extension IvyCore {
             metadata: metadata)
         sessions[peerKey] = session
         sessionKeyByLink[id] = peerKey
+        noteAttemptEnded(for: peerKey)
         if let existing {
             // The new session is selected before the old one's routes and
             // link go, so the old one ends without a disconnect (its peer is
