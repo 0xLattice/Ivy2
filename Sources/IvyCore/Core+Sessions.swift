@@ -767,11 +767,14 @@ extension IvyCore {
         }
 
         if session.role == .carrier {
+            // A carrier gets keepalives and relay control and nothing else.
+            // What else it sends is dropped, not held against it: being a
+            // carrier is this node's own choice, which the peer cannot see.
+            // To the peer this is one more node to gossip to and to query.
             switch message {
             case .ping, .pong:
                 break
             default:
-                rejectSession(ref, attributedTo: session.peerKey)
                 return
             }
         }

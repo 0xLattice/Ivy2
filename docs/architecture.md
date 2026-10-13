@@ -245,6 +245,11 @@ or place the carrier in endpoint routing. A carrier forwards each route in
 arrival order to its exact destination session, waits only until
 `requestTimeout` for writability, and then retires that route.
 
+Being a carrier is the configuring node's own choice, which the carrier cannot
+see: to it, that node is one more peer to query and gossip to. So a node takes
+only keepalives and relay control from a configured carrier and drops whatever
+else it sends, without ending the session or blaming it.
+
 Ivy attributes a violation only after verifying the charged peer's signature.
 Signed malformed endpoint payloads remain attributable through relay. Unsigned
 bytes are unattributed, and relay-controlled replay or sequence failure is
