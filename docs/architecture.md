@@ -383,6 +383,10 @@ UTF-8 text of at most 64 bytes.
 - Signalling counts only on the relayed session to an endpoint that is the
   peer's session now; anything else on the topic is dropped, and the
   application never sees the topic.
+- A relayed session busy with something else has no room for a message at
+  the moment it is sent. The signalling waits for room while its attempt
+  lasts.
+- The `log` option is told how each attempt ended, in a line.
 - One attempt per peer at a time, three for one relayed session, eight at
   once. An attempt takes at most eight messages of at most 1 KiB, both ends
   dial for six seconds, and it ends after fifteen, or when its peer abandons
