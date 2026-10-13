@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 public struct PeerHealthConfig: Sendable {
     public let keepaliveInterval: Duration

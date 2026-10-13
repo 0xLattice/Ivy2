@@ -1,5 +1,9 @@
 import Crypto
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 enum SessionProtocolError: Error, Equatable {
     case malformed
@@ -563,6 +567,6 @@ private struct SessionReader {
 
     mutating func readString() -> String? {
         guard let bytes = readData(max: Int(MessageLimits.maxStringLength)) else { return nil }
-        return String(data: bytes, encoding: .utf8)
+        return validUTF8String(bytes)
     }
 }

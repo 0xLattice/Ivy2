@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Tally
 
 public enum AuthenticatedPeerRole: Sendable, Equatable {

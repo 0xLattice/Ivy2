@@ -65,6 +65,13 @@ A stream must report the host its peer was observed at: netgroup admission
 keys on it. Its address is not one Ivy can dial, so it is kept out of routing
 unless the peer advertises a listen address of its own.
 
+The core also builds for WebAssembly, where `Int` is 32 bits, and gives the
+same trace there as natively. Two rules keep that true: a size limit is
+clamped when it becomes an `Int`, never converted outright, and random draws
+go through `UInt64` (`CoreRandom.below`, `CoreRandom.shuffled`), never through
+the standard library's `Int`-based ranges and shuffle. The core imports
+`FoundationEssentials` where it exists, not Foundation.
+
 Signatures, traffic evidence and randomness are injected (`IvySignatureScheme`,
 `PeerLedger`, `CoreRandom`). Production uses Ed25519, Tally and the system
 generator. `IvySimulation` uses repeatable stand-ins, because a session ID

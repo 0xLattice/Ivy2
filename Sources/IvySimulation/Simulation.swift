@@ -1,5 +1,9 @@
 @preconcurrency import Crypto
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import IvyCore
 import Tally
 
@@ -35,31 +39,31 @@ public struct SimulatedSignatureScheme: IvySignatureScheme {
     }
 }
 
-/// Serving credit a test sets by hand.
+/// Serving credit a test sets by hand. Like the simulation, it is used
+/// from one thread.
 public final class SimulatedLedger: PeerLedger, @unchecked Sendable {
-    private let lock = NSLock()
     private var credit: [PeerID: Double] = [:]
     private var violationCounts: [PeerID: Int] = [:]
 
     public init() {}
 
     public func setServingPriority(_ value: Double, for peer: PeerID) {
-        lock.withLock { credit[peer] = value }
+        credit[peer] = value
     }
 
     public func violations(of peer: PeerID) -> Int {
-        lock.withLock { violationCounts[peer] ?? 0 }
+        violationCounts[peer] ?? 0
     }
 
     public func recordSent(peer: PeerID, bytes: Int) {}
     public func recordReceived(peer: PeerID, bytes: Int) {}
 
     public func recordProtocolViolation(peer: PeerID) {
-        lock.withLock { violationCounts[peer, default: 0] += 1 }
+        violationCounts[peer, default: 0] += 1
     }
 
     public func servingPriority(for peer: PeerID) -> Double {
-        lock.withLock { credit[peer] ?? 0 }
+        credit[peer] ?? 0
     }
 }
 
@@ -339,7 +343,7 @@ public final class Simulation {
 
     /// A digest of every effect so far, in order: equal for equal runs.
     public var traceDigest: String {
-        return Data(digest.finalize()).map { String(format: "%02x", $0) }.joined()
+        return Data(digest.finalize()).map { hexByte($0) }.joined()
     }
 
     // MARK: - The event loop

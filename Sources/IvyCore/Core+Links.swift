@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Tally
 
 /// One byte path to a peer: a transport connection the shell owns, or a

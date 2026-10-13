@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 public struct ContentEntry: Sendable, Equatable {
     public let cid: String
@@ -526,7 +530,7 @@ struct DataReader {
               remaining >= Int(length) else { return nil }
         defer { offset += Int(length) }
         let start = data.startIndex + offset
-        return String(data: data[start..<start + Int(length)], encoding: .utf8)
+        return validUTF8String(data[start..<start + Int(length)])
     }
 
     mutating func readData() -> Data? {

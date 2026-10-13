@@ -142,6 +142,22 @@ sim.run(for: .seconds(30))
 print(sim.traceDigest)
 ```
 
+## In a browser
+
+`IvyCore` and `IvySimulation` build for WebAssembly, and behave there exactly
+as they do natively: `Wasm/run.sh` runs the core's test suite as Wasm and
+checks that a seeded network prints the same trace digest in both builds. The
+shell does not build for Wasm, because SwiftNIO does not; a browser supplies
+its own, around `IvyCore.step`.
+
+```sh
+IVY_CORE_ONLY=1 swift build --swift-sdk swift-6.4.0-RELEASE_wasm
+```
+
+`IVY_CORE_ONLY=1` leaves the shell and SwiftNIO out of the package. The core
+needs only `FoundationEssentials`, which keeps the binary small; full
+Foundation would add tens of megabytes of Unicode data.
+
 ## Boundary
 
 | Ivy owns | The caller owns |

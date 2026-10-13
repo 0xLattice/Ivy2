@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 public enum IvyLogLevel: Int, Sendable, Comparable {
     case debug = 0
@@ -46,7 +50,7 @@ public struct PrintLogger: IvyLogger {
         case .warning: label = "WARN"
         case .error: label = "ERROR"
         }
-        let filename = (file as NSString).lastPathComponent
+        let filename = file.split(separator: "/").last.map(String.init) ?? file
         print("[\(label)] \(filename):\(line) \(message())")
     }
 }
