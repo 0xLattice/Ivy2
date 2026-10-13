@@ -11,7 +11,15 @@ cd "$(dirname "$0")/.."
 SWIFT=${SWIFT:-swift}
 SDK=${IVY_WASM_SDK:?set IVY_WASM_SDK to a Wasm SDK id from 'swift sdk list'}
 
-IVY_CORE_ONLY=1 $SWIFT build -c release --product IvyWasm --swift-sdk "$SDK" --scratch-path .build-wasm
+# The toolchain's build tool sometimes dies of a signal with none of this
+# package's code running; see Wasm/run.sh. That is tried again.
+for attempt in 1 2 3; do
+    status=0
+    IVY_CORE_ONLY=1 $SWIFT build -c release --product IvyWasm --swift-sdk "$SDK" --scratch-path .build-wasm || status=$?
+    [ "$status" -lt 128 ] && break
+    echo "the build tool crashed (status $status), attempt $attempt"
+done
+[ "$status" -eq 0 ] || exit "$status"
 wasm=$(find .build-wasm -type f -name IvyWasm.wasm -path '*elease*' | head -1)
 mkdir -p Web/dist
 cp "$wasm" Web/dist/ivy.wasm

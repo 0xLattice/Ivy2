@@ -16,17 +16,30 @@ cd "$(dirname "$0")/.."
 SWIFT=${SWIFT:-swift}
 SDK=${IVY_WASM_SDK:?set IVY_WASM_SDK to a Wasm SDK id from 'swift sdk list'}
 
+# The toolchain's build tool sometimes dies of a signal while planning, with
+# nothing of this package running. That is tried again; an ordinary failure,
+# such as a compile error, is not.
+build() {
+    for attempt in 1 2 3; do
+        status=0
+        "$@" || status=$?
+        [ "$status" -lt 128 ] && return "$status"
+        echo "the build tool crashed (status $status), attempt $attempt"
+    done
+    return "$status"
+}
+
 echo "== core test suite as WebAssembly"
 IVY_CORE_ONLY=1 $SWIFT test --swift-sdk "$SDK" --scratch-path .build-wasm
 
 echo "== probe, native"
-$SWIFT build -c release --package-path Wasm/probe
+build $SWIFT build -c release --package-path Wasm/probe
 native=$(find Wasm/probe/.build -type f -name probe -perm -u+x ! -path '*wasm*' | head -1)
 "$native" > Wasm/probe/.build/native.out
 cat Wasm/probe/.build/native.out
 
 echo "== probe, WebAssembly"
-IVY_CORE_ONLY=1 $SWIFT build -c release --swift-sdk "$SDK" --package-path Wasm/probe --scratch-path Wasm/probe/.build-wasm
+build env IVY_CORE_ONLY=1 $SWIFT build -c release --swift-sdk "$SDK" --package-path Wasm/probe --scratch-path Wasm/probe/.build-wasm
 wasm=$(find Wasm/probe/.build-wasm -type f -name probe.wasm | head -1)
 node --no-warnings Wasm/run-wasi.mjs "$wasm" > Wasm/probe/.build/wasm.out
 cat Wasm/probe/.build/wasm.out
