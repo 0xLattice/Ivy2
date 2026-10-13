@@ -192,6 +192,11 @@ transport, so terminate `wss` in a proxy in front of it; then pass
 `trustForwardedFor: true` to `listen`, and only then, so peers are admitted by
 their own address and not the proxy's.
 
+The listener also answers STUN on the same port over UDP, so a browser learns
+its own address from the node it is connected to and from no one else. Behind
+a proxy, forward UDP on the port browsers dial to the listener's;
+`stun: false` leaves it out.
+
 Two browsers cannot accept a connection from each other at all, so they meet
 through a node both are connected to, one that has `relayEnabled`. `Web/`'s
 `RtcConnector` then signals a WebRTC data channel over that relayed session

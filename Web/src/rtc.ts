@@ -50,9 +50,12 @@ export interface PeerConnection {
 export interface RtcOptions {
   /// `RTCPeerConnection`, which is the default.
   PeerConnection?: new (configuration: { iceServers: RTCIceServer[] }) => PeerConnection;
-  /// STUN servers, for peers behind different NATs: `[{ urls: 'stun:…' }]`.
-  /// None by default, which connects peers that can reach each other's own
-  /// addresses. TURN is not used: a carrier already relays.
+  /// STUN servers, for peers behind different NATs. By default the carrier
+  /// the relayed session runs through is asked, on the port it was dialled
+  /// at: a node listening for WebSockets answers STUN there over UDP, and
+  /// it already knows this peer's address. `[]` asks no one, which connects
+  /// peers that can reach each other's own addresses. TURN is not used: a
+  /// carrier already relays.
   iceServers?: RTCIceServer[];
   /// Try as soon as a relayed session to an endpoint appears. On by default.
   autoUpgrade?: boolean;
@@ -131,7 +134,7 @@ async function remoteAddress(pc: PeerConnection): Promise<string | null> {
 /// starts: `ivy.delegate = connector.delegate(application)`.
 export class RtcConnector {
   private readonly PeerConnection: NonNullable<RtcOptions['PeerConnection']>;
-  private readonly iceServers: RTCIceServer[];
+  private readonly iceServers: RTCIceServer[] | undefined;
   private readonly autoUpgrade: boolean;
   private readonly deadline: number;
 
@@ -147,7 +150,7 @@ export class RtcConnector {
     options: RtcOptions = {},
   ) {
     this.PeerConnection = options.PeerConnection ?? globalThis.RTCPeerConnection;
-    this.iceServers = options.iceServers ?? [];
+    this.iceServers = options.iceServers;
     this.autoUpgrade = options.autoUpgrade ?? true;
     this.deadline = options.deadline ?? 20_000;
   }
@@ -283,8 +286,19 @@ export class RtcConnector {
     this.release(link);
   }
 
+  /// The carrier of the attempt's session, as a STUN server.
+  private carrierServers(session: AuthenticatedPeer): RTCIceServer[] {
+    if (session.route.kind !== 'relayed') return [];
+    const carrier = this.ivy.reachedAt(hex(session.route.carrier));
+    if (carrier === undefined) return [];
+    const host = carrier.host.includes(':') ? `[${carrier.host}]` : carrier.host;
+    return [{ urls: `stun:${host}:${carrier.port}` }];
+  }
+
   private open(attempt: Attempt): Link {
-    const pc = new this.PeerConnection({ iceServers: this.iceServers });
+    const pc = new this.PeerConnection({
+      iceServers: this.iceServers ?? this.carrierServers(attempt.session),
+    });
     const link: Link = { peer: attempt.peer, pc, transport: null, handed: false };
     attempt.link = link;
     this.links.add(link);

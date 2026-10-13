@@ -117,7 +117,7 @@ import { Ivy, RtcConnector } from './dist/src/index.js';
 
 const ivy = new Ivy(module, { signingKey: seed, carriers: [node] }, { dial });
 const rtc = new RtcConnector(ivy, {
-  iceServers: [{ urls: 'stun:stun.example.org' }],  // none by default
+  // iceServers: [{ urls: 'stun:stun.example.org' }],  // the carrier by default
 });
 ivy.delegate = rtc.delegate(application);           // before ivy.start()
 await ivy.start();
@@ -139,7 +139,7 @@ hears `peerConnected` again, with a `direct` route.
 | Option | Default | |
 | --- | --- | --- |
 | `PeerConnection` | `RTCPeerConnection` | The constructor, for a test to replace |
-| `iceServers` | none | STUN servers. Without one, only peers that can reach each other's own addresses connect. TURN is not used: the carrier already relays |
+| `iceServers` | the carrier | STUN servers, where each peer learns the address the other can reach it at. By default that is the carrier the relayed session runs through, asked over UDP at the host and port its WebSocket was reached at (`ivy.reachedAt`), so no third party is involved. `[]` asks no one, and then only peers that can reach each other's own addresses connect. TURN is not used: the carrier already relays |
 | `autoUpgrade` | `true` | Try whenever a relayed session to an endpoint appears |
 | `deadline` | `20000` | Milliseconds an attempt may take |
 

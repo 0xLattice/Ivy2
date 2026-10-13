@@ -235,14 +235,18 @@ export class FakeNetwork {
   /// The address the connection made `index`th is observed at.
   host = (index: number) => `9.${index + 1}.0.1`;
 
+  /// What each connection was made with, in order.
+  readonly configurations: { iceServers: RTCIceServer[] }[] = [];
+
   /// A constructor to give a connector in place of `RTCPeerConnection`.
-  readonly PeerConnection: new () => FakePeerConnection;
+  readonly PeerConnection: new (configuration: { iceServers: RTCIceServer[] }) => FakePeerConnection;
 
   constructor() {
     const network = this;
     this.PeerConnection = class extends FakePeerConnection {
-      constructor() {
+      constructor(configuration: { iceServers: RTCIceServer[] }) {
         super(network);
+        network.configurations.push(configuration);
       }
     };
   }
