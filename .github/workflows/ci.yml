@@ -39,6 +39,28 @@ jobs:
           echo "$first"; echo "$second"
           test -n "$first" && test "$first" = "$second"
 
+  wasm:
+    runs-on: ubuntu-latest
+    # The Wasm SDK must match the toolchain exactly.
+    container: swift:6.4.0
+    timeout-minutes: 60
+    env:
+      IVY_WASM_SDK: swift-6.4.0-RELEASE_wasm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install binaryen
+        run: apt-get update && apt-get install -y --no-install-recommends binaryen
+      - name: Install the WebAssembly SDK
+        run: >-
+          swift sdk install
+          https://download.swift.org/swift-6.4.0-release/wasm-sdk/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE_wasm.artifactbundle.tar.gz
+          --checksum f07b7be3c586d92d7a07051fc6d303b87ebea67eadc40640ba59d5a8b79aa86d
+      - name: The core as WebAssembly passes its suite and matches the native build
+        run: Wasm/run.sh
+
   interop:
     runs-on: macos-26
     timeout-minutes: 30

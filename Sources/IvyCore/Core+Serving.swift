@@ -1,5 +1,20 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Tally
+
+// `log2`, which Foundation would otherwise re-export.
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(WASILibc)
+import WASILibc
+#endif
 
 /// One Volume or bundle request a peer made on one session.
 struct InboundContentRequest: Hashable, Sendable {

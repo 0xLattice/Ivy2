@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Tally
 
 struct PendingNeighborResponse: Sendable {
@@ -77,7 +81,7 @@ extension IvyCore {
                       let key = try? PeerKey(endpoint.publicKey) else { continue }
                 accepted.append(PeerEndpoint(
                     publicKey: key.hex,
-                    host: endpoint.host.trimmingCharacters(in: .whitespacesAndNewlines),
+                    host: endpoint.host.trimmingWhitespace(),
                     port: endpoint.port))
             }
             resolveNeighborResponse(nonce: nonce, endpoints: accepted)
@@ -373,7 +377,7 @@ extension IvyCore {
     /// Looks up a random key, which refreshes the buckets it passes through.
     mutating func refreshRoutingTable() {
         guard isRunning, case .overlay = config.mode else { return }
-        let target = random.bytes32().map { String(format: "%02x", $0) }.joined()
+        let target = random.bytes32().map { hexByte($0) }.joined()
         startLookup(target: target, waiter: .refresh)
     }
 

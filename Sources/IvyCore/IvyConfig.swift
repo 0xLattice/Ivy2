@@ -1,5 +1,9 @@
 @preconcurrency import Crypto
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Tally
 
 public struct IvyConfig: Sendable {
@@ -194,7 +198,7 @@ public struct IvyConfig: Sendable {
             }
         }
         if let externalAddress {
-            let host = externalAddress.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            let host = externalAddress.host.trimmingWhitespace()
             guard NetGroup.ipv4Octets(host) != nil || NetGroup.ipv6Hextets(host) != nil,
                   externalAddress.port != 0 else {
                 throw IvyModeError.invalidConfiguration(
@@ -246,7 +250,7 @@ public struct IvyConfig: Sendable {
     }
 
     private func endpointIsDialable(_ endpoint: PeerEndpoint) -> Bool {
-        !endpoint.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !endpoint.host.trimmingWhitespace().isEmpty
             && endpoint.port != 0
     }
 

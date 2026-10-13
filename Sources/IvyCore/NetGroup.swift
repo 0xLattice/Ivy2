@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 
 /// Network-group ("netgroup") bucketing for peer diversity.
 ///
@@ -16,7 +20,7 @@ public enum NetGroup: Sendable {
 
     /// Coarse network-group key for a host string.
     public static func group(_ host: String) -> String {
-        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = host.trimmingWhitespace()
 
         // NOTE: a static AS-number override map (host/prefix → ASN) could slot
         // in here to bucket by autonomous system instead of raw prefix. Not
@@ -64,8 +68,8 @@ public enum NetGroup: Sendable {
             }
             bytes.append(v)
         }
-        return [String(format: "%02x%02x", bytes[0], bytes[1]),
-                String(format: "%02x%02x", bytes[2], bytes[3])]
+        return [hexByte(bytes[0]) + hexByte(bytes[1]),
+                hexByte(bytes[2]) + hexByte(bytes[3])]
     }
 
     /// All four octets of a dotted-quad IPv4 address ("192.168.1.1" → [192,168,1,1]).
@@ -109,7 +113,7 @@ public enum NetGroup: Sendable {
         guard !s.isEmpty else { return nil }
 
         // Split on "::" to expand the zero-run.
-        let runs = s.components(separatedBy: "::")
+        let runs = splitOnDoubleColon(s)
         guard runs.count <= 2 else { return nil }
 
         func hextets(_ segment: String) -> [String]? {
@@ -149,6 +153,6 @@ public enum NetGroup: Sendable {
     /// digits ("2001:db8::1" → "2001.0db8"). Returns nil if unparseable.
     private static func ipv6Group(_ host: String) -> String? {
         guard let h = ipv6Hextets(host) else { return nil }
-        return String(format: "%04x", h[0]) + "." + String(format: "%04x", h[1])
+        return hexWord(h[0]) + "." + hexWord(h[1])
     }
 }

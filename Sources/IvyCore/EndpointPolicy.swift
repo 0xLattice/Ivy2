@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Tally
 
 enum EndpointProvenance {
@@ -50,7 +54,7 @@ extension IvyCore {
         let discovered = key.peerID
         guard discovered != localID else { return false }
 
-        let host = endpoint.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let host = endpoint.host.trimmingWhitespace()
         guard !host.isEmpty,
               host != "0.0.0.0",
               host != "::",
@@ -96,8 +100,8 @@ extension IvyCore {
     }
 
     private func sameIPAddress(_ lhs: String, _ rhs: String) -> Bool {
-        let left = lhs.trimmingCharacters(in: .whitespacesAndNewlines)
-        let right = rhs.trimmingCharacters(in: .whitespacesAndNewlines)
+        let left = lhs.trimmingWhitespace()
+        let right = rhs.trimmingWhitespace()
         if let left = discoveredIPv4Octets(left),
            let right = discoveredIPv4Octets(right) {
             return left == right
@@ -116,7 +120,7 @@ extension IvyCore {
     /// special range (e.g. an RFC 5737 TEST-NET) is classified precisely without
     /// over-rejecting the real-public space surrounding it.
     func isNonRoutableDiscoveredHost(_ host: String) -> Bool {
-        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = host.trimmingWhitespace()
         if let octets = discoveredIPv4Octets(trimmed) {
             return Self.isNonRoutableIPv4(octets)
         }
@@ -127,7 +131,7 @@ extension IvyCore {
     }
 
     private func isPrivateUnicastHost(_ host: String) -> Bool {
-        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = host.trimmingWhitespace()
         if let o = discoveredIPv4Octets(trimmed) {
             return o[0] == 10
                 || (o[0] == 172 && (16...31).contains(o[1]))
@@ -140,7 +144,7 @@ extension IvyCore {
     }
 
     private func isLoopbackHost(_ host: String) -> Bool {
-        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = host.trimmingWhitespace()
         if let o = discoveredIPv4Octets(trimmed) { return o[0] == 127 }
         guard let h = NetGroup.ipv6Hextets(trimmed) else { return false }
         return h.dropLast().allSatisfy { $0 == 0 } && h.last == 1

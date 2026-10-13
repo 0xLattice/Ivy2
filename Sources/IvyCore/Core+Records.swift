@@ -1,4 +1,8 @@
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Tally
 
 struct ProviderHint: Sendable, Equatable {
@@ -208,7 +212,7 @@ extension IvyCore {
                   let key = try? PeerKey(endpoint.publicKey) else { continue }
             let canonical = PeerEndpoint(
                 publicKey: key.hex,
-                host: endpoint.host.trimmingCharacters(in: .whitespacesAndNewlines),
+                host: endpoint.host.trimmingWhitespace(),
                 port: endpoint.port)
             accepted.append(ProviderHint(
                 peer: key.peerID,

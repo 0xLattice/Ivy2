@@ -1,5 +1,9 @@
 import Crypto
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
 import Foundation
+#endif
 import Tally
 
 public enum PeerKeyError: Error, Equatable {
@@ -36,7 +40,7 @@ public struct PeerKey: Hashable, Sendable, Comparable, CustomStringConvertible {
     }
 
     public var hex: String {
-        rawRepresentation.map { String(format: "%02x", $0) }.joined()
+        rawRepresentation.map { hexByte($0) }.joined()
     }
 
     public var description: String { hex }
