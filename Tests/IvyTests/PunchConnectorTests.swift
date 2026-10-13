@@ -27,6 +27,14 @@ private final class Heard: IvyDelegate, @unchecked Sendable {
     }
 }
 
+/// What the connectors said of each attempt, for a failure to quote.
+private final class Reasons: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    var all: [String] { lock.withLock { lines } }
+    func add(_ line: String) { lock.withLock { lines.append(line) } }
+}
+
 /// A transport whose attempts never connect, as between two peers no packet
 /// passes between.
 private struct NoPath: PunchTransport {
@@ -63,6 +71,7 @@ final class PunchConnectorTests: XCTestCase {
         let carrier: Ivy
         let a: End
         let b: End
+        let reasons: Reasons
 
         /// Whom each end heard disconnect, by name: nobody, in every test.
         var disconnects: [String] {
@@ -108,6 +117,8 @@ final class PunchConnectorTests: XCTestCase {
         options.autoUpgrade = false
         options.hosts = ["127.0.0.1"]
         options.allowPrivateCandidates = true
+        let reasons = Reasons()
+        options.log = { reasons.add($0) }
         adjust(&options)
 
         let carrier = Ivy.forTesting(config(relay: true))
@@ -147,15 +158,15 @@ final class PunchConnectorTests: XCTestCase {
             XCTAssertFalse(made[0].isDirect)
             XCTAssertFalse(made[1].isDirect)
         }
-        return Triangle(carrier: carrier, a: made[0], b: made[1])
+        return Triangle(carrier: carrier, a: made[0], b: made[1], reasons: reasons)
     }
 
     func testTwoPeersThatMetThroughACarrierMoveToAConnectionOfTheirOwn() async throws {
         let t = try await triangle()
         let upgraded = await t.offerer.punch.upgrade(try XCTUnwrap(t.offerer.session))
-        XCTAssertTrue(upgraded)
+        XCTAssertTrue(upgraded, "\(t.reasons.all)")
         let direct = await eventually { t.a.isDirect && t.b.isDirect }
-        XCTAssertTrue(direct)
+        XCTAssertTrue(direct, "\(t.reasons.all)")
         XCTAssertEqual(t.a.session?.sessionID, t.b.session?.sessionID)
 
         // One session took the other's place: no disconnect, and the
@@ -179,9 +190,9 @@ final class PunchConnectorTests: XCTestCase {
     func testTheEndThatDoesNotOfferAsksForOne() async throws {
         let t = try await triangle()
         let upgraded = await t.asker.punch.upgrade(try XCTUnwrap(t.asker.session))
-        XCTAssertTrue(upgraded)
+        XCTAssertTrue(upgraded, "\(t.reasons.all)")
         let direct = await eventually { t.a.isDirect && t.b.isDirect }
-        XCTAssertTrue(direct)
+        XCTAssertTrue(direct, "\(t.reasons.all)")
         XCTAssertEqual(t.disconnects, [])
     }
 
@@ -190,7 +201,7 @@ final class PunchConnectorTests: XCTestCase {
         async let first = t.a.punch.upgrade(try XCTUnwrap(t.a.session))
         async let second = t.b.punch.upgrade(try XCTUnwrap(t.b.session))
         let results = try await [first, second]
-        XCTAssertEqual(results, [true, true])
+        XCTAssertEqual(results, [true, true], "\(t.reasons.all)")
         XCTAssertEqual(t.a.session?.sessionID, t.b.session?.sessionID)
         XCTAssertEqual(t.a.sessions.count, 2)
         XCTAssertEqual(t.b.sessions.count, 2)
@@ -200,6 +211,33 @@ final class PunchConnectorTests: XCTestCase {
         let t = try await triangle { $0.autoUpgrade = true }
         let direct = await eventually { t.a.isDirect && t.b.isDirect }
         XCTAssertTrue(direct)
+        XCTAssertEqual(t.disconnects, [])
+    }
+
+    /// A relayed session that is busy has no room for the signalling at the
+    /// moment it is sent. It waits its turn.
+    func testSignallingWaitsOutARelayedSessionWithNoRoom() async throws {
+        let t = try await triangle()
+        // Every message of the exchange is refused once before it is taken.
+        let refused = Reasons()
+        for end in [t.a, t.b] {
+            let (node, seen) = (end.node, Reasons())
+            end.punch.transmit = { session, payload in
+                let name = payload.map { String($0, radix: 16) }.joined(separator: ".")
+                if !seen.all.contains(name) {
+                    seen.add(name)
+                    refused.add(name)
+                    return .backpressured
+                }
+                return await node.sendMessage(to: session, topic: PunchConnector.topic, payload: payload)
+            }
+        }
+        let upgraded = await t.asker.punch.upgrade(try XCTUnwrap(t.asker.session))
+        XCTAssertTrue(upgraded, "\(t.reasons.all)")
+        let direct = await eventually { t.a.isDirect && t.b.isDirect }
+        XCTAssertTrue(direct, "\(t.reasons.all)")
+        // The request, the offer, the answer and the sync.
+        XCTAssertEqual(refused.all.count, 4)
         XCTAssertEqual(t.disconnects, [])
     }
 
@@ -230,6 +268,9 @@ final class PunchConnectorTests: XCTestCase {
         let t = try await triangle { $0.allowPrivateCandidates = false }
         let upgraded = await t.offerer.punch.upgrade(try XCTUnwrap(t.offerer.session))
         XCTAssertFalse(upgraded, "the peer offered 127.0.0.1")
+        XCTAssertTrue(
+            t.reasons.all.contains { $0.hasSuffix("the peer offered no address this node will dial") },
+            "\(t.reasons.all)")
         XCTAssertFalse(t.a.isDirect)
         XCTAssertFalse(t.b.isDirect)
         XCTAssertEqual(t.disconnects, [])
@@ -241,10 +282,13 @@ final class PunchConnectorTests: XCTestCase {
             Data(), Data([9, 0, 0, 0, 1]), Data([1, 0, 0, 0, 0]), Data([1, 0, 0, 0, 7, 3]),
             Data([2, 0, 0, 0, 7]), Data([3, 0, 0, 0, 7, 1]), Data(repeating: 1, count: 2048),
         ]
-        for payload in junk {
+        // A few at a time: a relayed session with more than four records
+        // waiting at its other end is closed, whatever they are.
+        for (index, payload) in junk.enumerated() {
             for (from, to) in [(t.a, t.b), (t.b, t.a)] {
                 _ = await from.node.sendMessage(to: to.node.id, topic: PunchConnector.topic, payload: payload)
             }
+            if index % 3 == 2 { try await Task.sleep(nanoseconds: 200_000_000) }
         }
         // From the carrier, which is a direct session.
         _ = await t.carrier.sendMessage(
@@ -255,7 +299,7 @@ final class PunchConnectorTests: XCTestCase {
 
         // And the pair can still be upgraded.
         let upgraded = await t.offerer.punch.upgrade(try XCTUnwrap(t.offerer.session))
-        XCTAssertTrue(upgraded)
+        XCTAssertTrue(upgraded, "\(t.reasons.all)")
     }
 
     func testCandidatesRoundTripAndRefuseWhatIsMalformed() {

@@ -63,6 +63,8 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
         /// Dial candidates that are not public addresses: for peers on one
         /// private network, and for tests.
         public var allowPrivateCandidates = false
+        /// Told how each attempt ended, in a line: the peer and the reason.
+        public var log: (@Sendable (String) -> Void)?
 
         public init() {}
     }
@@ -121,6 +123,10 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
     private let options: Options
     private weak var inner: (any IvyDelegate)?
 
+    /// How a signalling message leaves: through the node, unless a test
+    /// stands in the way.
+    var transmit: @Sendable (AuthenticatedPeer, Data) async -> SendMessageResult
+
     private let lock = NSLock()
     /// The session each peer has now, and the attempts made on it.
     private var sessions: [String: (session: AuthenticatedPeer, attempts: Int)] = [:]
@@ -143,6 +149,7 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
         self.transports = transports
         self.inner = inner
         self.options = options
+        transmit = { await ivy.sendMessage(to: $0, topic: Self.topic, payload: $1) }
     }
 
     // MARK: - IvyDelegate
@@ -199,7 +206,9 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
             return await outcome(of: attempt)
         case .request(let attempt):
             Task {
-                if await !self.send(attempt, Self.kindRequest) { self.end(attempt, tell: false) }
+                if await !self.send(attempt, Self.kindRequest) {
+                    self.end(attempt, tell: false, why: "the request could not be sent")
+                }
             }
             return await outcome(of: attempt)
         }
@@ -212,7 +221,7 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
             sessions = [:]
             return Array(attempts.values)
         }
-        for attempt in running { end(attempt, tell: false) }
+        for attempt in running { end(attempt, tell: false, why: "the connector was closed") }
     }
 
     // MARK: - Sessions
@@ -225,7 +234,10 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
             return attempts[peer]
         }
         // Whatever was being tried was for the session this one replaced.
-        if let replaced { end(replaced, tell: false, direct: session.route == .direct) }
+        if let replaced {
+            let direct = session.route == .direct
+            end(replaced, tell: false, direct: direct, why: direct ? "direct" : "another relayed session took its place")
+        }
         if options.autoUpgrade, session.role == .endpoint, session.route != .direct {
             Task { _ = await self.upgrade(session) }
         }
@@ -241,7 +253,7 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
             if case .handed = attempt.phase { return nil }
             return attempt
         }
-        if let ending { end(ending, tell: false) }
+        if let ending { end(ending, tell: false, why: "the peer disconnected") }
     }
 
     // MARK: - Attempts
@@ -260,7 +272,7 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
         let deadline = options.deadline
         attempt.timer = Task { [weak self] in
             guard (try? await Task.sleep(for: deadline)) != nil else { return }
-            self?.end(attempt, tell: true)
+            self?.end(attempt, tell: true, why: "it ran out of time")
         }
         return attempt
     }
@@ -283,7 +295,7 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
     }
 
     /// Ends an attempt. A stream already given to the node is the node's.
-    private func end(_ attempt: Attempt, tell: Bool, direct: Bool = false) {
+    private func end(_ attempt: Attempt, tell: Bool, direct: Bool = false, why: String) {
         let ended = lock.withLock { () -> (id: UInt32, waiters: [CheckedContinuation<Bool, Never>])? in
             guard attempts[attempt.peer] === attempt else { return nil }
             attempts[attempt.peer] = nil
@@ -291,6 +303,7 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
             return (attempt.id, attempt.waiters)
         }
         guard let ended else { return }
+        options.log?("punch with \(attempt.peer.prefix(12)): \(why)")
         attempt.timer?.cancel()
         for socket in lock.withLock({ attempt.sockets }) { socket.close() }
         if tell, ended.id != 0 {
@@ -324,7 +337,9 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
     }
 
     private func offer(_ attempt: Attempt) async {
-        guard let candidates = await prepare(attempt) else { return end(attempt, tell: false) }
+        guard let candidates = await prepare(attempt) else {
+            return end(attempt, tell: false, why: "this node has no address to offer")
+        }
         let id = lock.withLock { () -> UInt32? in
             guard attempts[attempt.peer] === attempt else { return nil }
             lastAttempt = lastAttempt % .max + 1
@@ -334,12 +349,14 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
         }
         guard let id else { return }
         if await !send(attempt, Self.kindOffer, id: id, body: Self.encode(candidates)) {
-            end(attempt, tell: false)
+            end(attempt, tell: false, why: "the offer could not be sent")
         }
     }
 
     private func answer(_ attempt: Attempt, id: UInt32) async {
-        guard let candidates = await prepare(attempt) else { return end(attempt, tell: true) }
+        guard let candidates = await prepare(attempt) else {
+            return end(attempt, tell: true, why: "this node has no address to offer")
+        }
         let live = lock.withLock { () -> Bool in
             guard attempts[attempt.peer] === attempt else { return false }
             attempt.phase = .awaitingSync
@@ -347,7 +364,7 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
         }
         guard live else { return }
         if await !send(attempt, Self.kindAnswer, id: id, body: Self.encode(candidates)) {
-            end(attempt, tell: false)
+            end(attempt, tell: false, why: "the answer could not be sent")
         }
     }
 
@@ -379,22 +396,27 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
         }
         guard handed, let stream else {
             stream?.close()
-            return end(attempt, tell: true)
+            return end(attempt, tell: true, why: "no connection was made in the time both ends dialled")
         }
         guard offers(attempt.peer) else {
             // The other end's handshake arrives on it; `connected` hears of
             // the session it makes, and the deadline of one that never does.
             guard let lease = ivy.reserveInboundAdmission(observedHost: stream.observedHost) else {
                 stream.close()
-                return end(attempt, tell: true)
+                return end(attempt, tell: true, why: "the node did not admit the connection")
             }
             return ivy.accept(stream, admission: lease)
         }
         let endpoint = PeerEndpoint(publicKey: attempt.peer, host: stream.observedHost ?? "", port: 0)
-        try? await ivy.connect(to: endpoint, over: stream)
+        var failure = "the handshake over the connection made no session"
+        do {
+            try await ivy.connect(to: endpoint, over: stream)
+        } catch {
+            failure = "the handshake over the connection failed: \(error)"
+        }
         // `connect` reports a peer that is connected, by either route.
         let direct = lock.withLock { sessions[attempt.peer]?.session.route == .direct }
-        end(attempt, tell: !direct, direct: direct)
+        end(attempt, tell: !direct, direct: direct, why: direct ? "direct" : failure)
     }
 
     // MARK: - Signalling
@@ -403,10 +425,19 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
         var payload = Data([kind])
         payload.append(contentsOf: withUnsafeBytes(of: id.bigEndian) { Array($0) })
         payload.append(body)
-        if case .enqueued = await ivy.sendMessage(to: attempt.session, topic: Self.topic, payload: payload) {
-            return true
+        // A relayed session busy with something else has no room for a
+        // moment, and the signalling waits its turn while the attempt lasts.
+        while true {
+            switch await transmit(attempt.session, payload) {
+            case .enqueued:
+                return true
+            case .backpressured:
+                guard await ivy.waitUntilWritable(to: attempt.session),
+                      kind == Self.kindAbandon || isLive(attempt) else { return false }
+            default:
+                return false
+            }
         }
-        return false
     }
 
     private func signalled(_ payload: Data, from: AuthenticatedPeer) async {
@@ -416,7 +447,7 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
         guard from.role == .endpoint, from.route != .direct,
               let known, known.session.sessionID == from.sessionID else { return }
         func malformed() {
-            if let attempt { end(attempt, tell: true) }
+            if let attempt { end(attempt, tell: true, why: "the peer's signalling was malformed") }
         }
         guard payload.count >= 5, payload.count <= Self.maxSignalBytes else { return malformed() }
         let kind = payload[0]
@@ -451,7 +482,9 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
                 return begun
             }
             guard let answering else { return }
-            guard !remote.isEmpty else { return end(answering, tell: true) }
+            guard !remote.isEmpty else {
+                return end(answering, tell: true, why: "the peer offered no address this node will dial")
+            }
             return await answer(answering, id: id)
         }
 
@@ -467,11 +500,13 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
 
         switch (kind, phase) {
         case (Self.kindAbandon, _) where body.isEmpty:
-            end(attempt, tell: false)
+            end(attempt, tell: false, why: "the peer abandoned it")
         case (Self.kindAnswer, .awaitingAnswer(let sent)) where offers(peer):
             guard let candidates = Self.decode(body) else { return malformed() }
             let remote = await acceptable(candidates)
-            guard !remote.isEmpty else { return end(attempt, tell: true) }
+            guard !remote.isEmpty else {
+                return end(attempt, tell: true, why: "the peer offered no address this node will dial")
+            }
             let live = lock.withLock { () -> Bool in
                 guard attempts[peer] === attempt else { return false }
                 attempt.remote = remote
@@ -479,7 +514,9 @@ public final class PunchConnector: IvyDelegate, @unchecked Sendable {
                 return true
             }
             guard live else { return }
-            guard await send(attempt, Self.kindSync, id: id) else { return end(attempt, tell: false) }
+            guard await send(attempt, Self.kindSync, id: id) else {
+                return end(attempt, tell: false, why: "the sync could not be sent")
+            }
             // The sync takes half the round trip to arrive, and the other
             // end dials when it does.
             let wait = (ContinuousClock.now - sent) / 2
