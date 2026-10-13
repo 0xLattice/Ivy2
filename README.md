@@ -158,6 +158,26 @@ IVY_CORE_ONLY=1 swift build --swift-sdk swift-6.4.0-RELEASE_wasm
 needs only `FoundationEssentials`, which keeps the binary small; full
 Foundation would add tens of megabytes of Unicode data.
 
+A browser cannot open a TCP connection either. `IvyWebSocket` lets a node
+accept its peers over WebSocket, and dial other nodes the same way:
+
+```swift
+import IvyWebSocket
+
+let webSocket = WebSocketTransport(ivy: ivy)
+try await webSocket.listen(port: 8080)          // ws://<host>:8080/ivy
+
+try await webSocket.connect(to: peer, host: peer.host, port: 8080)
+// ...
+await webSocket.stopListening()
+```
+
+A WebSocket carries the same sessions as TCP: Ivy uses it as a byte stream and
+frames its own records inside binary messages. There is no TLS in the
+transport, so terminate `wss` in a proxy in front of it; then pass
+`trustForwardedFor: true` to `listen`, and only then, so peers are admitted by
+their own address and not the proxy's.
+
 ## Boundary
 
 | Ivy owns | The caller owns |

@@ -65,6 +65,50 @@ A stream must report the host its peer was observed at: netgroup admission
 keys on it. Its address is not one Ivy can dial, so it is kept out of routing
 unless the peer advertises a listen address of its own.
 
+### WebSocket
+
+`IvyWebSocket` supplies streams over WebSocket, for a peer that cannot open a
+TCP connection: a browser. It is a separate product, so a node that does not
+want it does not build it. `WebSocketTransport` listens and dials for one
+`Ivy`, and hands each upgraded connection over by the two calls above.
+
+Ivy frames its own records, so the socket is used only as an ordered byte
+stream. Binary payloads are concatenated as they arrive, fragmented messages
+included, and where a message ends means nothing. A text frame, a reserved bit,
+a frame masked the wrong way round and a frame over the limit each close the
+connection with a close frame. Ping is answered with pong, the latest only if
+the peer is not reading its answers.
+
+- Outbound, a record is split into frames of at most 64 KiB, each a message of
+  its own. A receiver holds a frame until it has all of it, and a control frame
+  cannot interrupt one, so the frame is kept to the write high-water mark.
+- Inbound, a frame may be up to 1 MiB. NIO buffers a frame whole before any of
+  it is delivered, so that is what a peer can make one connection hold beyond a
+  socket read, before the core's byte budgets apply. It is above what Ivy sends
+  because a browser sends each message as one frame; a peer written for Ivy
+  should not send messages larger than 64 KiB either.
+- Reads are pulled as on TCP: the socket is not read unless the core asked for
+  bytes, so a connection held back leaves its data in the kernel. Control
+  frames are behind that data, so a ping is answered when the connection is
+  next read, not while it is held.
+- Admission is reserved when the upgrade request arrives and before it is
+  granted. A refused peer gets `503` and is never upgraded; another path gets
+  `404`, and a request that is not a WebSocket upgrade `426`.
+- A socket that has not finished the HTTP exchange holds no admission yet, so
+  the listener bounds those itself: 256 at once, ten seconds each.
+
+There is no TLS in this target. `wss` is terminated in front of the listener,
+by a reverse proxy or a load balancer. Behind one, every socket comes from the
+proxy, so `trustForwardedFor` takes the peer's address from the last hop of
+`X-Forwarded-For`, the one the proxy itself wrote, and refuses a request
+without it. Enable it only behind a proxy that sets the header and that
+nothing can bypass: the address decides netgroup admission, and a peer that
+reaches the listener directly would choose its own. It is off by default.
+
+The listener does not look at `Origin`. Any page may open a socket, as any
+peer may open a TCP connection; what it can do is decided by the session
+handshake.
+
 The core also builds for WebAssembly, where `Int` is 32 bits, and gives the
 same trace there as natively. Two rules keep that true: a size limit is
 clamped when it becomes an `Int`, never converted outright, and random draws
