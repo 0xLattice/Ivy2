@@ -218,7 +218,10 @@ extension IvyCore {
         guard let pending = pendingSessions.removeValue(forKey: id) else { return }
         timers.cancel(.pendingSession(id))
         removeLink(id, notifyTransport: true)
-        if let peer = pending.remoteKey { updateResponderWaiter(for: peer) }
+        if let peer = pending.remoteKey {
+            updateResponderWaiter(for: peer)
+            releaseHeldDisconnect(for: peer)
+        }
         if let op = pending.op { authResults.append((op, false)) }
         switch pending.direction {
         case .initiator(let expected, _):
@@ -436,6 +439,7 @@ extension IvyCore {
         guard canPromote(link, peerKey: peerKey, isInbound: isInbound) else {
             removeLink(id, notifyTransport: true)
             updateResponderWaiter(for: peerKey)
+            releaseHeldDisconnect(for: peerKey)
             if let op = pending.op { authResults.append((op, false)) }
             return
         }
@@ -452,6 +456,7 @@ extension IvyCore {
             metadata: metadata)
         sessions[peerKey] = session
         sessionKeyByLink[id] = peerKey
+        heldDisconnects.remove(peerKey)
         noteAttemptEnded(for: peerKey)
         if let existing {
             // The new session is selected before the old one's routes and
@@ -512,6 +517,14 @@ extension IvyCore {
         session.op = nil
         sessions[key] = session
         authResults.append((op, true))
+    }
+
+    /// The handshake a disconnect was waiting on has ended without a session.
+    private mutating func releaseHeldDisconnect(for key: PeerKey) {
+        guard heldDisconnects.contains(key), sessions[key] == nil,
+              !hasVerifiedResponder(for: key) else { return }
+        heldDisconnects.remove(key)
+        emit(.peerDisconnected(key.peerID))
     }
 
     private func keepsExistingSession(_ existing: Session, over sessionID: SessionID, direct: Bool) -> Bool {
@@ -579,7 +592,17 @@ extension IvyCore {
             health.removeValue(forKey: key.peerID)
         }
         if let op = session.op { authResults.append((op, false)) }
-        if session.didNotifyConnect { emit(.peerDisconnected(key.peerID)) }
+        if session.didNotifyConnect {
+            // A peer moving to a direct connection closes the relayed route
+            // as soon as its side is done, and that close can arrive before
+            // the last record of the new handshake. The peer has not gone:
+            // the disconnect is reported only if that handshake fails.
+            if hasVerifiedResponder(for: key) {
+                heldDisconnects.insert(key)
+            } else {
+                emit(.peerDisconnected(key.peerID))
+            }
+        }
 
         guard reconnect, isRunning,
               !configuredEndpoints(for: key, role: session.role).isEmpty else { return }

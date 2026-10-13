@@ -295,7 +295,10 @@ beside the relayed session, and the direct session it makes replaces it. Both
 ends choose the same way, by one rule: a direct session is kept over a relayed
 one, and between two of a kind the smaller session ID is kept. The
 application hears `peerConnected` for the new session and no disconnect, and
-the route through the carrier is closed. Records in flight on the relayed
+the route through the carrier is closed. The end that started the handshake
+finishes first, so its close of the route can reach the other end before the
+handshake's last record does; that end holds the disconnect, and reports it
+only if the handshake then fails. Records in flight on the relayed
 session when it is replaced are not resent. If the handshake fails the stream
 is closed and the relayed session stays; `connect` still reports the peer
 connected, so the caller reads the session's route to tell which it has. A

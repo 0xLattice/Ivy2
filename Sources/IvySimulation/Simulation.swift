@@ -143,6 +143,8 @@ public final class Simulation {
         var undelivered = 0
         /// The far end closed; the core hears once it has read what arrived first.
         var remoteClosed = false
+        /// Added to the latency of what this end writes.
+        var extraDelay: Duration = .zero
     }
 
     private enum Action {
@@ -281,6 +283,12 @@ public final class Simulation {
                 endpoint ?? b.endpoint, near, observedHost: observedHost ?? b.host, localHost: a.host),
             on: a)
         return (id, near)
+    }
+
+    /// Slows what `node` writes on `connection`, so that another path to the
+    /// same peer is the faster one.
+    public func delayWrites(by delay: Duration, on connection: ConnectionID, at node: Node) {
+        node.connections[connection]?.extraDelay = delay
     }
 
     /// Whether the node still holds its end of `connection`.
@@ -451,7 +459,7 @@ public final class Simulation {
                 let end = min(offset + segmentSize, bytes.endIndex)
                 schedule(
                     .arrive(endpoint.remoteConnection, Data(bytes[offset..<end])),
-                    for: remote, after: latency)
+                    for: remote, after: latency + endpoint.extraDelay)
                 offset = end
             }
 

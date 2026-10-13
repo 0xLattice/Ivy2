@@ -89,6 +89,48 @@ final class DirectUpgradeTests: XCTestCase {
         guard case .enqueued(_, .relayed)? = sent else { return XCTFail("the relayed session was lost") }
     }
 
+    /// The initiator is done first and closes the route. When the carrier is
+    /// the faster path, that close reaches the responder before the last
+    /// record of the handshake does. The responder must not report its peer
+    /// gone in between.
+    func testTheRouteClosingAheadOfTheHandshakeIsNotADisconnect() {
+        for seed: UInt64 in 1...12 {
+            let (sim, _, a, b) = relayed(seed: seed)
+            let (request, connection) = sim.requestConnectOver(from: a, to: b)
+            sim.delayWrites(by: .milliseconds(200), on: connection, at: a)
+            sim.run(until: { sim.result(of: request, on: a) != nil })
+            // The route's close has arrived and the handshake's end has not.
+            sim.run(for: .milliseconds(100))
+            XCTAssertEqual(route(a, to: b), .direct, "seed \(seed)")
+            XCTAssertNil(b.core.sessions[a.key], "seed \(seed): the test did not reach the gap")
+            XCTAssertEqual(b.disconnected, [], "seed \(seed)")
+
+            sim.run(for: .seconds(1))
+            XCTAssertEqual(route(b, to: a), .direct, "seed \(seed)")
+            XCTAssertEqual(b.disconnected, [], "seed \(seed)")
+            XCTAssertEqual(a.disconnected, [], "seed \(seed)")
+            XCTAssertTrue(b.core.heldDisconnects.isEmpty)
+        }
+    }
+
+    /// A disconnect that was held is reported once the handshake it waited
+    /// on ends without a session.
+    func testAHeldDisconnectIsReportedWhenTheHandshakeFails() {
+        let (sim, _, a, b) = relayed()
+        let (_, connection) = sim.requestConnectOver(from: a, to: b)
+        sim.delayWrites(by: .milliseconds(200), on: connection, at: a)
+        sim.run(until: { b.core.hasVerifiedResponder(for: a.key) })
+        // `a` gives up on `b` altogether: the route closes at once and the
+        // direct connection after it.
+        sim.send(.command(.disconnect(b.peer)), to: a)
+        sim.run(for: .milliseconds(100))
+        XCTAssertNil(b.core.sessions[a.key])
+        sim.run(for: .seconds(2))
+        XCTAssertEqual(b.disconnected, [a.peer])
+        XCTAssertNil(b.core.sessions[a.key])
+        XCTAssertTrue(b.core.heldDisconnects.isEmpty)
+    }
+
     /// Whichever session has the smaller identifier, the direct one stays.
     func testTheDirectSessionWinsWhateverTheIdentifiers() {
         var relayedWasSmaller = 0
