@@ -333,6 +333,9 @@ public actor Ivy {
     public var knownPeerEndpoints: [PeerEndpoint] { core.knownPeerEndpoints }
     public var peerConnectionCount: Int { core.peerConnectionCount }
     public var publicAddress: ObservedAddress? { core.publicAddress }
+    /// The session the node has with `peer` now, if any: its route says
+    /// whether the peer is reached directly or through a carrier.
+    public func session(with peer: PeerID) -> AuthenticatedPeer? { core.authenticatedPeer(for: peer) }
     /// Whether `host` is an IP literal anyone on the internet could be
     /// reached at.
     public func isGloballyRoutable(_ host: String) -> Bool { core.isGloballyRoutable(host) }
@@ -355,6 +358,15 @@ public actor Ivy {
         case .cancelled:
             throw CancellationError()
         }
+    }
+
+    /// Says whether a connected peer relays. When a peer cannot be dialled,
+    /// the node asks the peers it was told relay for a route to it, after
+    /// its configured carriers. Say so only of a peer that said it does: one
+    /// that does not relay ends the session of a peer that asks. Forgotten
+    /// when the peer's session ends.
+    public func setRelaying(_ peer: PeerID, _ relays: Bool) {
+        apply(.command(.setRelaying(peer, relays)))
     }
 
     public func disconnect(_ peer: PeerID) {

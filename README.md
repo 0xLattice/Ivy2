@@ -211,6 +211,13 @@ try await ivy.start()
 // A relayed session to an endpoint is upgraded as it appears.
 ```
 
+The relayed session comes first. A node that cannot dial a peer asks for a
+route to it: from its configured carriers, and from connected peers it was
+told relay, with `ivy.setRelaying(peer, true)`. Peers do not announce that in
+the handshake, so an application says it in a message of its own and tells
+its node. Only tell it of a peer that said so: one that does not relay ends
+the session of a peer that asks.
+
 Where the NATs do not allow it the relayed session stays as it was.
 `Punch/run.sh` puts two nodes behind NATs of their own, on Linux, and checks
 both outcomes.

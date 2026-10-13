@@ -2,7 +2,7 @@
 // Sources/IvyCore/EventCodec.swift is the other half, and test/vectors.json
 // holds the two together.
 
-export const version = 1;
+export const version = 2;
 
 /// A peer's Ed25519 public key as 64 lowercase hex digits.
 export type PeerID = string;
@@ -122,7 +122,8 @@ export type Command =
   | { kind: 'broadcast'; topic: string; payload: Uint8Array }
   | { kind: 'announceProvider'; rootCID: string; expiresAt: bigint }
   | { kind: 'reportDeficientContent'; rootCID: string; servedBy: PeerID }
-  | { kind: 'setContentSource'; present: boolean };
+  | { kind: 'setContentSource'; present: boolean }
+  | { kind: 'setRelaying'; peer: PeerID; relays: boolean };
 
 export type JobResult =
   | { kind: 'entries'; entries: ContentEntry[] }
@@ -531,6 +532,10 @@ class Writer {
       case 'setContentSource':
         this.uint8(5);
         return this.bool(value.present);
+      case 'setRelaying':
+        this.uint8(6);
+        this.string(value.peer);
+        return this.bool(value.relays);
     }
   }
 
@@ -907,6 +912,8 @@ class Reader {
         };
       case 5:
         return { kind: 'setContentSource', present: this.bool() };
+      case 6:
+        return { kind: 'setRelaying', peer: this.string(), relays: this.bool() };
       default:
         throw new Error(`unknown command ${tag}`);
     }

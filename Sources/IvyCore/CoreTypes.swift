@@ -111,6 +111,9 @@ public enum Command: Sendable, Equatable {
     case reportDeficientContent(rootCID: String, servedBy: PeerID)
     /// Whether the shell has a content source to run jobs against.
     case setContentSource(Bool)
+    /// Whether a connected peer is known to relay, and so may be asked for a
+    /// route. Forgotten when the peer's session ends.
+    case setRelaying(PeerID, Bool)
 }
 
 public enum JobResult: Sendable, Equatable {

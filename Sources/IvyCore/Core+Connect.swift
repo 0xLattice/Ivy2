@@ -489,10 +489,14 @@ extension IvyCore {
         if endpointSession(for: op.key).map({ isLive($0.link) }) == true {
             return finishConnect(id, .connected)
         }
-        connectOps[id]?.carriers = sessions.values
-            .filter { $0.role == .carrier && links[$0.link]?.isDirect == true }
-            .map(\.peerKey)
-            .sorted()
+        // Configured carriers first, then peers known to relay. One that has
+        // no session with the target says so at once, so asking is cheap.
+        let direct = sessions.values.filter { links[$0.link]?.isDirect == true }
+        let carriers = direct.filter { $0.role == .carrier }.map(\.peerKey).sorted()
+        let relaying = direct
+            .filter { $0.role == .endpoint && $0.peerKey != op.key && relayingPeers.contains($0.peerKey) }
+            .map(\.peerKey).sorted()
+        connectOps[id]?.carriers = carriers + relaying.prefix(Self.maxRelayingPeersAsked)
         tryNextCarrier(id)
     }
 

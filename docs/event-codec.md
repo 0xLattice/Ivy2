@@ -32,7 +32,7 @@ All integers are big-endian, like the wire codec.
 A payload costs its own length plus four bytes; nothing is escaped or
 re-encoded, so megabytes pass through as they are.
 
-Every encoding starts with one version byte, currently `1`, and holds exactly
+Every encoding starts with one version byte, currently `2`, and holds exactly
 one value: bytes after its end are an error. A change to anything below is a
 new version.
 
@@ -113,6 +113,7 @@ bare lower-case one.
 | 3 | `announceProvider` | `string` rootCID, `u64` expiresAt |
 | 4 | `reportDeficientContent` | `string` rootCID, `peerID` servedBy |
 | 5 | `setContentSource` | `bool` |
+| 6 | `setRelaying` | `peerID`, `bool` relays |
 
 ### Job result
 
