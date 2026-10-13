@@ -105,6 +105,19 @@ without it. Enable it only behind a proxy that sets the header and that
 nothing can bypass: the address decides netgroup admission, and a peer that
 reaches the listener directly would choose its own. It is off by default.
 
+The listener also answers STUN Binding requests, on the same port over UDP,
+unless `listen` is told `stun: false`. A page asks it for its own address
+before connecting to another page; see Browser to browser. The answer is the
+source address of the request, as XOR-MAPPED-ADDRESS, and nothing else in
+STUN is implemented: no credentials, no attributes read, no TURN.
+
+- UDP does not pass through the proxy that terminates `wss`. The page asks at
+  the host and port it dialled, so UDP to that port must reach this one.
+- The source of a request is not verified, so an answer can be aimed at
+  someone who did not ask. It is 32 bytes for a request of 20 or more (44 over
+  IPv6), and one node sends at most 20 a second to one address (one IPv6 /64)
+  and answers at most 4096 addresses in a second.
+
 The listener does not look at `Origin`. Any page may open a socket, as any
 peer may open a TCP connection; what it can do is decided by the session
 handshake.
@@ -335,6 +348,12 @@ travel on that session as peer messages on the topic `ivy.rtc/1`. When the
 channel opens the offerer gives it to `connect(to:over:)` and the answerer to
 `accept`, and the direct session replaces the relayed one as above. There is
 no TURN: a carrier already relays for peers with no path to each other.
+
+Two peers behind different NATs each need the address the other can reach
+them at, which a browser learns only by STUN. Each asks the carrier its
+relayed session runs through, at the address it reached that carrier's
+WebSocket: no one else is asked, and the carrier already sees that address.
+Peers whose NATs give no usable address this way stay on the relayed session.
 
 A signalling message is one byte of kind, a big-endian `u32` naming the
 attempt, and UTF-8 text to the end:

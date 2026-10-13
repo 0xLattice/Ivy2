@@ -66,7 +66,13 @@ async function triangle(
     lag = 10,
     host,
     ...options
-  }: { autoUpgrade?: boolean; deadline?: number; lag?: number; host?: (index: number) => string } = {},
+  }: {
+    autoUpgrade?: boolean;
+    deadline?: number;
+    iceServers?: RTCIceServer[];
+    lag?: number;
+    host?: (index: number) => string;
+  } = {},
 ): Promise<Triangle> {
   const network = new FakeNetwork();
   if (host !== undefined) network.host = host;
@@ -214,6 +220,27 @@ test('two peers that met through a carrier move to a data channel of their own',
   a.ivy.disconnect(b.ivy.localID);
   assert.ok(await eventually(() => b.heard.log.includes('disconnected')));
   assert.ok(await eventually(() => network.open.length === 0));
+});
+
+test('each end asks the carrier of its session for its own address', async () => {
+  // `a` configured the carrier, which the core dialled, and `b` connected
+  // to it over a stream of its own.
+  const { network, a, b } = await triangle({ autoUpgrade: false });
+  assert.equal(await b.rtc.upgrade(b.session()), true);
+  assert.ok(await eventually(() => isDirect(a) && isDirect(b)));
+  assert.deepEqual(network.configurations, [
+    { iceServers: [{ urls: 'stun:8.9.0.1:4001' }] },
+    { iceServers: [{ urls: 'stun:8.9.0.1:4001' }] },
+  ]);
+});
+
+test('the servers a connector is given are the ones asked, and may be none', async () => {
+  for (const iceServers of [[], [{ urls: 'stun:stun.test:3478' }]]) {
+    const { network, a, b } = await triangle({ autoUpgrade: false, iceServers });
+    assert.equal(await a.rtc.upgrade(a.session()), true);
+    assert.ok(await eventually(() => isDirect(a) && isDirect(b)));
+    assert.deepEqual(network.configurations, [{ iceServers }, { iceServers }]);
+  }
 });
 
 test('a relayed session is upgraded as it appears, from whichever end', async () => {

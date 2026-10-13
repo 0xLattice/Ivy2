@@ -91,6 +91,9 @@ export class IvyError extends Error {
   }
 }
 
+/// Peers whose address `reachedAt` keeps.
+const maxReached = 256;
+
 const isSession = (peer: PeerID | AuthenticatedPeer): peer is AuthenticatedPeer =>
   typeof peer !== 'string';
 
@@ -100,7 +103,6 @@ export class Ivy {
   readonly localID: PeerID;
   /// The address the core was told this node is reachable at, if any.
   publicAddress: Address | null = null;
-
   private readonly core: Core;
   private readonly dial: IvyOptions['dial'];
   private contentSource: ContentSource | null;
@@ -115,6 +117,9 @@ export class Ivy {
   private readonly waiters = new Map<bigint, (result: RequestResult) => void>();
   private readonly connections = new Map<bigint, Connection>();
   private readonly jobs = new Map<bigint, AbortController>();
+  /// Where a stream was last opened to each peer, most recent last. The
+  /// core keeps no address for a stream it was handed.
+  private readonly reached = new Map<PeerID, PeerEndpoint>();
 
   /// Throws if the core does not accept `config`.
   constructor(
@@ -311,6 +316,7 @@ export class Ivy {
     // The core counts a dial until it hears how it ended, so it always does.
     new Promise<Transport>((resolve) => resolve(this.dial!(endpoint))).then((transport) => {
       if (this.destroyed) return transport.close();
+      this.remember(endpoint);
       this.open(transport, (connection) =>
         this.apply({
           kind: 'connectionOpened',
@@ -417,6 +423,7 @@ export class Ivy {
       over.close();
       throw new IvyError('destroyed');
     }
+    this.remember(endpoint);
     let result!: Promise<RequestResult>;
     this.open(over, (connection) => {
       result = this.request(
@@ -431,6 +438,20 @@ export class Ivy {
       );
     });
     unwrap(await result);
+  }
+
+  /// The address a stream to `peer` was last opened at, by the `dial`
+  /// option or handed to `connect` with it. Not one the core chose: it
+  /// says where the peer was reached, not that it is there now.
+  reachedAt(peer: PeerID): PeerEndpoint | undefined {
+    return this.reached.get(peer);
+  }
+
+  private remember(endpoint: PeerEndpoint) {
+    if (endpoint.port === 0) return;
+    this.reached.delete(endpoint.publicKey);
+    this.reached.set(endpoint.publicKey, endpoint);
+    if (this.reached.size > maxReached) this.reached.delete(this.reached.keys().next().value!);
   }
 
   async connectViaRelay(endpoint: PeerEndpoint, options: RequestOptions = {}): Promise<void> {

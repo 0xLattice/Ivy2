@@ -28,6 +28,7 @@ public final class WebSocketTransport: @unchecked Sendable {
     private let lock = NSLock()
     private var listening = false
     private var listener: Channel?
+    private var stunResponder: Channel?
     private var handshakes: [ObjectIdentifier: Channel] = [:]
 
     public convenience init(
@@ -46,6 +47,7 @@ public final class WebSocketTransport: @unchecked Sendable {
 
     deinit {
         listener?.close(promise: nil)
+        stunResponder?.close(promise: nil)
         for channel in handshakes.values { channel.close(promise: nil) }
     }
 
@@ -64,11 +66,17 @@ public final class WebSocketTransport: @unchecked Sendable {
     /// proxy that writes that hop itself, and that nothing can bypass: the
     /// address decides netgroup admission, and a peer that can reach the
     /// listener directly would choose its own.
+    ///
+    /// With `stun`, STUN Binding requests are answered on the same port over
+    /// UDP, which is where a browser connected here asks for its own address
+    /// before it connects to another browser. Behind a proxy, that is the
+    /// port the browser dials, and its UDP must be passed on to this one.
     public func listen(
         host: String = "0.0.0.0",
         port: UInt16,
         path: String = "/ivy",
-        trustForwardedFor: Bool = false
+        trustForwardedFor: Bool = false,
+        stun: Bool = true
     ) async throws {
         let starting = lock.withLock { () -> Bool in
             defer { listening = true }
@@ -114,26 +122,47 @@ public final class WebSocketTransport: @unchecked Sendable {
                 }
             }
         do {
-            let channel = try await bootstrap.bind(host: host, port: Int(port)).get()
-            lock.withLock { listener = channel }
+            // A port of the system's choosing is free for TCP and may not be
+            // for UDP, so another is asked for.
+            var attempts = port == 0 && stun ? 8 : 1
+            while true {
+                attempts -= 1
+                let channel = try await bootstrap.bind(host: host, port: Int(port)).get()
+                guard stun else { return lock.withLock { listener = channel } }
+                do {
+                    let responder = try await DatagramBootstrap(group: group)
+                        .channelInitializer { $0.pipeline.addHandler(STUNResponder()) }
+                        .bind(host: host, port: channel.localAddress?.port ?? Int(port)).get()
+                    return lock.withLock {
+                        listener = channel
+                        stunResponder = responder
+                    }
+                } catch {
+                    try? await channel.close().get()
+                    if attempts == 0 { throw error }
+                }
+            }
         } catch {
             lock.withLock { listening = false }
             throw error
         }
     }
 
-    /// Closes the listener and every socket that has not been upgraded yet.
+    /// Closes the listener, the STUN responder and every socket that has not
+    /// been upgraded yet.
     /// Upgraded connections are the node's, and close with it.
     public func stopListening() async {
-        let (listener, waiting) = lock.withLock { () -> (Channel?, [Channel]) in
+        let (listener, responder, waiting) = lock.withLock { () -> (Channel?, Channel?, [Channel]) in
             defer {
                 listening = false
                 self.listener = nil
+                stunResponder = nil
                 handshakes = [:]
             }
-            return (self.listener, Array(handshakes.values))
+            return (self.listener, stunResponder, Array(handshakes.values))
         }
         for channel in waiting { channel.close(promise: nil) }
+        try? await responder?.close().get()
         try? await listener?.close().get()
     }
 

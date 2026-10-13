@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { type ChildProcess, spawn } from 'node:child_process';
+import { createSocket } from 'node:dgram';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { createInterface } from 'node:readline';
@@ -334,6 +335,37 @@ test('the core dials a native node through webSocketDialer', { skip }, async () 
   assert.deepEqual(asked, [peer.endpoint]);
   assert.deepEqual(ivy.connectedPeers, [peer.endpoint.publicKey]);
   assert.equal((await ivy.fetchVolume('small')).entries.size, 1);
+});
+
+test('a native node answers STUN where its WebSocket was reached', { skip }, async () => {
+  const peer = await native();
+  const ivy = node({ dial: webSocketDialer(() => peer.url) });
+  await ivy.start();
+  assert.equal(ivy.reachedAt(peer.endpoint.publicKey), undefined);
+  await ivy.connect(peer.endpoint);
+  const reached = ivy.reachedAt(peer.endpoint.publicKey);
+  assert.deepEqual(reached, peer.endpoint);
+
+  // A Binding request, as a browser gathering its addresses sends.
+  const transaction = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const cookie = [0x21, 0x12, 0xa4, 0x42];
+  const socket = createSocket('udp4');
+  try {
+    socket.bind(0, '127.0.0.1');
+    await once(socket, 'listening');
+    socket.send(Uint8Array.from([0, 1, 0, 0, ...cookie, ...transaction]), reached!.port, reached!.host);
+    const [reply] = (await once(socket, 'message')) as [Buffer];
+    // A success response, whose one attribute is XOR-MAPPED-ADDRESS.
+    assert.deepEqual([...reply.subarray(0, 20)], [1, 1, 0, 12, ...cookie, ...transaction]);
+    assert.deepEqual([...reply.subarray(20, 26)], [0, 0x20, 0, 8, 0, 1]);
+    assert.equal(reply.readUInt16BE(26) ^ 0x2112, socket.address().port);
+    assert.deepEqual(
+      [...reply.subarray(28)].map((byte, index) => byte ^ cookie[index]!),
+      [127, 0, 0, 1],
+    );
+  } finally {
+    socket.close();
+  }
 });
 
 test('a native node that closes ends the session', { skip }, async () => {
