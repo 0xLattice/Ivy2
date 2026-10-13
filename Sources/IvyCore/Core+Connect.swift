@@ -51,6 +51,9 @@ struct ConnectOp: Sendable {
         case dialing
         case authenticating(LinkID)
         case awaitingResponder(AfterResponder)
+        /// Another attempt to reach the same peer is under way; this one
+        /// takes its outcome.
+        case following
         case relayOpening(routeID: Data)
         case relayAuthenticating(routeID: Data, link: LinkID)
     }
@@ -77,6 +80,14 @@ struct ConnectOp: Sendable {
     var phase: Phase = .idle
 
     var peer: PeerID { key.peerID }
+
+    /// A fetch reaching for its providers waits for an attempt already in
+    /// progress. A lookup moves on to its other candidates, a caller's
+    /// connect is told at once, and a configured peer's upkeep retries later.
+    var followsAttemptInProgress: Bool {
+        if case .group = waiter { return true }
+        return false
+    }
 }
 
 enum GroupWaiter: Sendable, Equatable {
@@ -145,6 +156,8 @@ extension IvyCore {
     private mutating func finishConnect(_ id: OpID, _ result: ConnectResult) {
         guard let op = connectOps.removeValue(forKey: id) else { return }
         if responderWaiters[op.key] == id { responderWaiters.removeValue(forKey: op.key) }
+        stopFollowing(id, key: op.key)
+        noteAttemptEnded(for: op.key)
         closeSuppliedConnectionUnlessSelected(op)
         resolveConnectWaiter(op.waiter, result, peer: op.peer, role: op.role, op: id)
     }
@@ -227,6 +240,15 @@ extension IvyCore {
             guard let dial = reserveOutgoingDial(
                 to: route, key: op.key, op: id, dialling: op.supplied == nil) else {
                 if op.role == .carrier { continue }
+                // A fetch waits for an attempt already under way: two
+                // fetches that need the same provider must not have the
+                // second find it "not connected" and give up while the
+                // first is still dialling.
+                if op.followsAttemptInProgress, attemptInProgress(for: op.key) {
+                    connectOps[id]?.phase = .following
+                    connectFollowers[op.key, default: []].append(id)
+                    return
+                }
                 return finishConnect(id, .notAdmitted)
             }
             connectOps[id]?.phase = .dialing
@@ -340,6 +362,7 @@ extension IvyCore {
         guard let entry = outgoingDials.removeValue(forKey: peer) else { return false }
         dialPeers.removeValue(forKey: entry.dial)
         let key = try? PeerKey(peer.publicKey)
+        if let key { noteAttemptEnded(for: key) }
         if isRunning, let key, hasLiveSession(key) {
             reconnectAttempts.removeValue(forKey: peer)
             cancelScheduledReconnect(peer)
@@ -509,6 +532,49 @@ extension IvyCore {
         authenticateInitiator(link, expected: op.key, routeBinding: routeID, op: id)
     }
 
+    // MARK: - Following an attempt in progress
+
+    /// Whether a dial or handshake for `key` is under way.
+    func attemptInProgress(for key: PeerKey) -> Bool {
+        if let dial = outgoingDials[key.peerID], !dial.abandoned { return true }
+        if responderWaiters[key] != nil { return true }
+        return pendingSessions.values.contains { pending in
+            switch pending.direction {
+            case .initiator(let expected, _):
+                return expected == key
+            case .responder:
+                return pending.remoteKey == key
+            }
+        }
+    }
+
+    /// Something that could decide a follower's outcome just happened.
+    mutating func noteAttemptEnded(for key: PeerKey) {
+        if connectFollowers[key] != nil { followerChecks.insert(key) }
+    }
+
+    private mutating func stopFollowing(_ id: OpID, key: PeerKey) {
+        guard var followers = connectFollowers[key] else { return }
+        followers.removeAll { $0 == id }
+        connectFollowers[key] = followers.isEmpty ? nil : followers
+    }
+
+    /// Followers end connected once the peer has a session, and not
+    /// admitted once nothing is reaching for it any more.
+    mutating func settleFollowers(of key: PeerKey) {
+        guard let followers = connectFollowers[key] else { return }
+        let result: ConnectResult
+        if endpointSession(for: key).map({ isLive($0.link) }) == true {
+            result = .connected
+        } else if !attemptInProgress(for: key) {
+            result = .notAdmitted
+        } else {
+            return
+        }
+        connectFollowers.removeValue(forKey: key)
+        for id in followers { finishConnect(id, result) }
+    }
+
     // MARK: - Cancelling
 
     /// Ends an operation whose caller has gone. A dial already out keeps its
@@ -520,6 +586,8 @@ extension IvyCore {
         switch op.phase {
         case .idle, .awaitingResponder:
             break
+        case .following:
+            stopFollowing(id, key: op.key)
         case .dialing:
             outgoingDials[op.peer]?.op = nil
         case .authenticating(let link):

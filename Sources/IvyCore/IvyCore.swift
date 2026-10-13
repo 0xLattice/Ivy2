@@ -44,6 +44,10 @@ public struct IvyCore: Sendable {
     /// record that produced them has been fully handled.
     var authResults: [(op: OpID, authenticated: Bool)] = []
     var responderResults: [(op: OpID, connected: Bool)] = []
+    /// Connect operations waiting on another attempt to reach the same
+    /// peer, and the peers whose attempts may just have ended.
+    var connectFollowers: [PeerKey: [OpID]] = [:]
+    var followerChecks: Set<PeerKey> = []
     var deliveries: [DeliveryToken: Delivery] = [:]
     var writabilityWaiters: [LinkID: [WritabilityWaiter]] = [:]
 
@@ -204,7 +208,8 @@ public struct IvyCore: Sendable {
             emit(.publicAddressDiscovered(address))
         }
 
-        while !pumpQueue.isEmpty || !authResults.isEmpty || !responderResults.isEmpty {
+        while !pumpQueue.isEmpty || !authResults.isEmpty || !responderResults.isEmpty
+                || !followerChecks.isEmpty {
             drainPumps()
             let responders = responderResults
             responderResults.removeAll()
@@ -214,6 +219,9 @@ public struct IvyCore: Sendable {
             for result in handshakes {
                 authenticationFinished(result.op, authenticated: result.authenticated)
             }
+            let peers = followerChecks.sorted()
+            followerChecks.removeAll()
+            for peer in peers { settleFollowers(of: peer) }
         }
         if let earliest = timers.earliest, earliest != lastWake {
             lastWake = earliest
@@ -306,6 +314,8 @@ public struct IvyCore: Sendable {
         pendingRelayOpens.removeAll()
         responderWaiters.removeAll()
         reconnectScheduled.removeAll()
+        connectFollowers.removeAll()
+        followerChecks.removeAll()
         reconnectAttempts.removeAll()
         // A dial in flight keeps its entry so its connection, when the shell
         // reports it, is recognised and closed.
