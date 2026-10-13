@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Two pages, peer to peer</title>
+    <style>
+      body { font: 14px/1.5 ui-monospace, monospace; margin: 2rem; }
+      #result { font-size: 2rem; font-weight: bold; }
+      .pass { color: #1a7f37; }
+      .fail { color: #cf222e; }
+    </style>
+  </head>
+  <body>
+    <p>An Ivy node in this page. It meets the node in another page through a node both reach over WebSocket, and then moves to a WebRTC data channel between the two pages.</p>
+    <p id="result">running</p>
+    <pre id="log"></pre>
+    <script type="module" src="../dist/demo/peers.js"></script>
+  </body>
+</html>

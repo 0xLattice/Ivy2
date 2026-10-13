@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ivy over WebRTC</title>
+    <style>
+      body { font: 14px/1.5 ui-monospace, monospace; margin: 2rem; }
+      #result { font-size: 2rem; font-weight: bold; }
+      .pass { color: #1a7f37; }
+      .fail { color: #cf222e; }
+    </style>
+  </head>
+  <body>
+    <p>
+      Three Ivy nodes in this page: a carrier, and two peers that meet through it and
+      move to a WebRTC data channel of their own.
+    </p>
+    <p id="result">running</p>
+    <pre id="log"></pre>
+    <script type="module" src="../dist/demo/rtc.js"></script>
+  </body>
+</html>

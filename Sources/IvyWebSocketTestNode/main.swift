@@ -1,6 +1,9 @@
 // A node for Web/'s tests to reach over a real WebSocket.
 //
-//   IvyWebSocketTestNode <signing key seed, 64 hex digits>
+//   IvyWebSocketTestNode <signing key seed, 64 hex digits> [--relay]
+//
+// With `--relay` it also carries sessions between its peers, as the node two
+// pages meet through does.
 //
 // It listens on a loopback port of the system's choosing and prints one line
 // of JSON naming it: {"publicKey":"…","port":…}. It serves two Volumes whose
@@ -56,7 +59,8 @@ let config = IvyConfig(
     stunServers: [],
     healthConfig: PeerHealthConfig(enabled: false),
     // Every test connects from the loopback address.
-    maxConnectionsPerNetgroup: 16)
+    maxConnectionsPerNetgroup: 16,
+    relayEnabled: CommandLine.arguments.dropFirst(2).contains("--relay"))
 let ivy = Ivy(config: config)
 let echo = Echo()
 await ivy.setDelegate(echo)

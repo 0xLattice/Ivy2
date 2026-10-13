@@ -325,6 +325,78 @@ ambiguous because a carrier can replay a valid record.
 Timeouts, failed dials, unavailable content, and local queue pressure remain
 route or service state, not protocol violations.
 
+## Browser to browser
+
+Two browsers reach each other over a WebRTC data channel, which `Web/` sets up
+(`src/rtc.ts`, `src/datachannel.ts`) and the core knows nothing of: to it the
+channel is one more supplied stream. Both are connected to a carrier, and one
+opens a relayed session to the other. Offer, answer and ICE candidates then
+travel on that session as peer messages on the topic `ivy.rtc/1`. When the
+channel opens the offerer gives it to `connect(to:over:)` and the answerer to
+`accept`, and the direct session replaces the relayed one as above. There is
+no TURN: a carrier already relays for peers with no path to each other.
+
+A signalling message is one byte of kind, a big-endian `u32` naming the
+attempt, and UTF-8 text to the end:
+
+| Kind | | Attempt | Text |
+| --- | --- | --- | --- |
+| 0 | request: "offer to me" | 0 | none |
+| 1 | offer | the offerer's choice, not 0 | SDP |
+| 2 | answer | the offer's | SDP |
+| 3 | candidate | the offer's | one ICE candidate line, for the only media section |
+| 4 | abandon | the offer's | none |
+
+- The peer with the smaller public key is the offerer, always. The other asks
+  with a request, and an offer from it is dropped, so two peers that start at
+  once make one connection.
+- Signalling counts only when it arrives on the relayed session to an endpoint
+  that is the peer's session now. From a direct session or a carrier it is
+  dropped. Either way the application never sees the topic.
+- One attempt per peer at a time, and three for one relayed session. A message
+  for another attempt is dropped. An attempt takes at most 64 messages of at
+  most 8 KiB and sends at most 64 candidates.
+- An attempt ends after 20 seconds, or when its peer abandons it, or on
+  anything malformed: an unknown kind, a description or candidate the browser
+  refuses, an answer nobody asked for. Its peer connection is closed and the
+  relayed session is left as it was. Nothing about signalling ends a session.
+- The peer connection is closed when its stream closes, when the peer
+  disconnects, and when the connector is closed.
+
+Signalling is as authentic as the relayed session: its records are signed end
+to end, so the carrier can drop or delay an offer but not forge one. It is
+not what authenticates the channel. The core's handshake runs over the
+channel as over any stream: the offerer accepts only the key it meant to
+reach, and the answerer learns the key of whoever is there, as on any stream
+it accepts. Whoever carried the signalling, a session exists only with a peer
+that proved its key over the channel itself.
+
+The end that completes the handshake first closes the relayed session. The
+other end can hear of that through the carrier before the handshake's last
+record reaches it over the channel; the core holds that disconnect, so each
+application hears only `peerConnected` for the direct session.
+
+A data channel delivers whatever its peer sends and cannot be paused, so the
+transport adds a credit window. Every data-channel message is at most 16 KiB,
+the size all browsers exchange, and starts with a type byte: `0` and up to
+16 383 bytes of the stream, or `1` and a big-endian `u32` granting that many
+more bytes. Each end starts with 1 MiB of credit and never has more than that
+outstanding. A receiver hands bytes over only as the core asks, at most
+64 KiB at a time, and grants back what was taken once that is a quarter of
+the window; so it holds at most 1 MiB unread, and a peer that sends past its
+credit is closed. A sender regains credit once a round trip at best, so the
+window is what one round trip carries: 1 MiB keeps a 100 ms path above
+10 MiB/s. The stream is writable while it has credit and the channel's own
+buffer is under 256 KiB.
+
+The observed host is the remote address of the selected ICE candidate pair.
+A browser often hides that address, behind an mDNS name of its own choosing
+or behind nothing; a name says nothing of where a peer is and the peer picks
+it, so the stream is then given `<peer key>.webrtc.invalid`, for the key the
+signalling was signed by. `NetGroup` puts a host that is not an address in a
+group of its own, so such peers are admitted and do not share a netgroup; the
+netgroup limit does not bound them, and `maxConnections` does.
+
 ## Lifecycle
 
 Lifecycle calls execute in order. `stop` answers every request, closes every
