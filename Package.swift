@@ -55,6 +55,7 @@ var targets: [Target] = [
 
 if !coreOnly {
     products.insert(.library(name: "Ivy", targets: ["Ivy"]), at: 0)
+    products.insert(.library(name: "IvyWebSocket", targets: ["IvyWebSocket"]), at: 1)
     dependencies.append(.package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"))
     targets += [
         // The I/O shell: connections, STUN, the timer, and the application-facing actor.
@@ -67,11 +68,32 @@ if !coreOnly {
                 .product(name: "NIOPosix", package: "swift-nio"),
             ]
         ),
+        // Ivy over a WebSocket, for peers that cannot open a TCP connection.
+        .target(
+            name: "IvyWebSocket",
+            dependencies: [
+                "Ivy",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOWebSocket", package: "swift-nio"),
+            ]
+        ),
         .testTarget(
             name: "IvyTests",
             dependencies: [
                 "Ivy",
                 "Tally",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ]
+        ),
+        .testTarget(
+            name: "IvyWebSocketTests",
+            dependencies: [
+                "IvyWebSocket",
+                "Ivy",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
