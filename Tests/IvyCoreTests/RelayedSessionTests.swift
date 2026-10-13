@@ -315,15 +315,17 @@ final class RelayedSessionTests: XCTestCase {
         XCTAssertNotNil(a.core.sessions[c.key])
     }
 
+    /// The carrier cannot know it was configured as one, so the ordinary
+    /// traffic it sends is dropped without ending the session.
     func testCarrierSessionCarriesOnlyKeepaliveAndRelayControl() {
-        let forbidden: [Message] = [
+        let ignored: [Message] = [
             .peerMessage(topic: "t", payload: Data([1])),
             .findNode(target: Data(repeating: 1, count: 32), nonce: 3),
             .volumeRequest(requestID: 1, rootCID: "root"),
             .volumeBundleRequest(requestID: 1, rootCID: "root"),
             .announceProvider(rootCID: "root", expiresAt: 2_000_000_000),
         ]
-        for message in forbidden {
+        for message in ignored {
             let sim = Simulation()
             let carrier = sim.relayIdentity(1)
             let node = sim.relayNode(carriers: [carrier.endpoint])
@@ -343,14 +345,46 @@ final class RelayedSessionTests: XCTestCase {
 
             raw.send(message)
             sim.run(for: .zero)
-            XCTAssertFalse(raw.isConnected, "\(message)")
-            XCTAssertTrue(raw.nodeClosedConnection, "\(message)")
-            XCTAssertEqual(node.ledger.violations(of: carrier.peer), 1, "\(message)")
-            XCTAssertEqual(node.disconnected, [carrier.peer])
+            XCTAssertTrue(raw.isConnected, "\(message)")
+            XCTAssertEqual(node.ledger.violations(of: carrier.peer), 0, "\(message)")
+            XCTAssertEqual(node.disconnected, [])
             XCTAssertTrue(node.received.isEmpty)
             XCTAssertTrue(node.startedJobs.isEmpty)
-            XCTAssertTrue(raw.take().isEmpty, "\(message)")
+            XCTAssertTrue(raw.take().isEmpty, "nothing is answered: \(message)")
+            XCTAssertTrue(node.core.router.allPeers().isEmpty)
+            XCTAssertTrue(node.core.providerHints.isEmpty)
+
+            // The session still does what a carrier's session is for.
+            raw.send(.ping(nonce: 7))
+            XCTAssertEqual(raw.take { $0.pongNonce }, [7])
         }
+    }
+
+    /// A relay-enabled overlay node gossips to, and refreshes its routing
+    /// through, every peer it has. A node using it as a carrier must not
+    /// lose it for that.
+    func testACarriersGossipAndRoutingRefreshDoNotCostItsSession() {
+        let sim = Simulation()
+        let carrier = sim.node(relayEnabled: true)
+        let node = sim.node(carriers: [carrier.endpoint])
+        sim.run(for: .seconds(2))
+        XCTAssertEqual(node.core.sessions[carrier.key]?.role, .carrier)
+        // The carrier sees an ordinary peer, and one with a routing entry.
+        XCTAssertEqual(carrier.core.connectedPeers, [node.peer])
+        XCTAssertEqual(carrier.core.router.allPeers().map(\.id), [node.peer])
+
+        sim.send(.command(.broadcast(topic: "gossip", payload: Data([1, 2, 3]))), to: carrier)
+        // Past the first routing refresh at 30 s and the next at 150 s.
+        sim.run(for: .seconds(200))
+
+        XCTAssertEqual(node.core.sessions[carrier.key]?.role, .carrier)
+        XCTAssertEqual(node.disconnected, [])
+        XCTAssertEqual(node.ledger.violations(of: carrier.peer), 0)
+        XCTAssertTrue(node.received.isEmpty, "a carrier's gossip is not delivered")
+        XCTAssertEqual(sim.trace.filter { entry in
+            if case .dial = entry.effect { return entry.node == node.id }
+            return false
+        }.count, 1, "the carrier was dialled once and never lost")
     }
 
     // MARK: - Configuration
