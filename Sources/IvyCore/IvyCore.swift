@@ -371,6 +371,8 @@ public struct IvyCore: Sendable {
                 }
             case .volumeRequest(let requestID):
                 timeOutVolumeRequest(requestID: requestID)
+            case .volumeWritable(let fetch):
+                volumeFetchBecameWritable(fetch, writable: false)
             case .serving(let request):
                 servingTimedOut(request)
             }
@@ -598,6 +600,7 @@ enum TimerKind: Hashable, Sendable {
     case neighbor(UInt64)
     case providerQuery(String)
     case volumeRequest(UInt64)
+    case volumeWritable(OpID)
     case serving(InboundContentRequest)
 }
 

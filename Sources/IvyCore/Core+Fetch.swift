@@ -66,6 +66,8 @@ struct VolumeFetch: Sendable {
         case searching
         /// Every candidate is at its in-flight limit.
         case waitingSlot
+        /// The peer's link has no room for the request yet.
+        case waitingWritable(peer: PeerID)
         case asking(UInt64, peer: PeerID)
     }
 
@@ -348,13 +350,42 @@ extension IvyCore {
             case .answered(let response):
                 releaseOutstandingVolumeSlot(peer)
                 if recordVolumeAnswer(id, response) { return }
+            case .backpressured(let link):
+                // No room yet is not an answer: the request waits for the
+                // link, which the shell reports writable again once it has
+                // flushed. Answering "not found" here made a fetch started in
+                // a burst fail though every peer held the Volume.
+                if awaitWritable(link, .volumeFetch(id)) {
+                    volumeFetches[id]?.remaining.insert(peer, at: 0)
+                    volumeFetches[id]?.phase = .waitingWritable(peer: peer)
+                    timers.set(.volumeWritable(id), at: now.uptime + config.requestTimeout)
+                    releaseOutstandingVolumeSlot(peer)
+                    return
+                }
+                releaseOutstandingVolumeSlot(peer)
+                if recordVolumeAnswer(id, fetch.isBundle ? .notSent : .empty) { return }
             }
         }
+    }
+
+    /// The link a fetch was waiting on has room, or (`writable` false) is
+    /// gone or stayed full for `requestTimeout`.
+    mutating func volumeFetchBecameWritable(_ id: OpID, writable: Bool) {
+        guard let fetch = volumeFetches[id], case .waitingWritable(let peer) = fetch.phase else { return }
+        timers.cancel(.volumeWritable(id))
+        removeWritabilityWaiter(.volumeFetch(id))
+        volumeFetches[id]?.phase = .starting
+        if !writable {
+            volumeFetches[id]?.remaining.removeAll { $0 == peer }
+            if recordVolumeAnswer(id, fetch.isBundle ? .notSent : .empty) { return }
+        }
+        askNextVolumePeer(id)
     }
 
     private enum VolumeRequestStart {
         case sent(UInt64)
         case answered(AttributedVolumeBundleResponse)
+        case backpressured(LinkID)
     }
 
     /// One Volume request, or one bundle request, to one peer.
@@ -373,15 +404,22 @@ extension IvyCore {
             ? Message.volumeBundleRequest(requestID: requestID, rootCID: fetch.rootCID)
             : Message.volumeRequest(requestID: requestID, rootCID: fetch.rootCID)
         var sessionID: Data?
+        var session: Session?
         if let exactPeer {
-            if let session = endpointSession(for: exactPeer.key),
-               session.sessionID.bytes == exactPeer.sessionID,
-               case .enqueued = enqueue(message, on: session.ref) {
-                sessionID = exactPeer.sessionID
+            session = endpointSession(for: exactPeer.key)
+            if session?.sessionID.bytes != exactPeer.sessionID { session = nil }
+        } else {
+            session = endpointSession(for: peer)
+        }
+        if let session {
+            switch enqueue(message, on: session.ref) {
+            case .enqueued:
+                sessionID = session.sessionID.bytes
+            case .backpressured:
+                return .backpressured(session.ref.link)
+            case .notConnected, .locallyRejected:
+                break
             }
-        } else if let session = endpointSession(for: peer),
-                  case .enqueued = enqueue(message, on: session.ref) {
-            sessionID = session.sessionID.bytes
         }
         guard let sessionID else { return .answered(fetch.isBundle ? .notSent : .empty) }
         pendingVolumeRequests[requestID] = PendingVolumeRequest(
@@ -480,6 +518,9 @@ extension IvyCore {
             }
         case .waitingSlot:
             outstandingVolumeSlotWaiters.removeAll { $0 == id }
+        case .waitingWritable:
+            removeWritabilityWaiter(.volumeFetch(id))
+            timers.cancel(.volumeWritable(id))
         case .asking(let requestID, let peer):
             resolveVolumeRequest(requestID: requestID)
             releaseOutstandingVolumeSlot(peer)

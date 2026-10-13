@@ -171,6 +171,7 @@ enum WritabilityWaiter: Sendable, Equatable {
     case serving(InboundContentRequest)
     /// The source link of a relayed record waiting on its destination.
     case relayForward(LinkID)
+    case volumeFetch(OpID)
 }
 
 enum LinkSendResult: Sendable, Equatable {
@@ -475,6 +476,8 @@ extension IvyCore {
                 servingBecameWritable(request, writable: writable)
             case .relayForward(let source):
                 relayForwardBecameWritable(source, writable: writable)
+            case .volumeFetch(let fetch):
+                volumeFetchBecameWritable(fetch, writable: writable)
             }
         }
     }

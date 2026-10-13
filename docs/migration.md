@@ -51,6 +51,7 @@ These are the places where 2.0 does not do exactly what 15.0.1 did.
 | Reading during a delivery | The decoder kept decoding, up to two frames per connection, while the delegate ran | The connection is not read while a record is with the delegate. Less is buffered and the peer is held back the same way; a malformed length behind the held record is noticed when the record is released, not before |
 | Relay forwarding wait | `Task.sleep(for:)` raced against writability | A stored deadline. This removes the one use of `Task.sleep(for:)`, which lattice-node bans under Swift 6.3 optimisation |
 | Two Volume fetches needing the same unconnected provider | The second found the first's dial in progress and returned empty | The second waits for that dial and is served |
+| A Volume request for a link with no room | Answered empty at once, as if no peer held the Volume | Waits for the link, up to `requestTimeout` |
 | Stale completions | Rejected by run and operation generations | Cannot occur: stop clears the state and identifiers are not reused |
 
 One documentation fix: 15.0.1's architecture doc said that exhausting the
