@@ -158,6 +158,8 @@ extension IvyCore {
 
     private func endpointMayReceiveRelayControl(_ message: Message, peer: PeerKey) -> Bool {
         switch message {
+        case .relayOpen(let routeID, _):
+            return relayingPeers.contains(peer) && pendingRelayOpens[routeID]?.carrier == peer
         case .relayOffer(let routeID, _):
             return config.relayEnabled && relayRoutes[routeID]?.target == peer
         case .relayReady(let routeID, _):

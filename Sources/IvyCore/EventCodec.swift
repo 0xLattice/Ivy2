@@ -12,7 +12,7 @@ import Tally
 /// Encoding traps on a string or byte field of 4 GiB or more.
 public enum EventCodec {
     /// The first byte of every encoding.
-    public static let version: UInt8 = 1
+    public static let version: UInt8 = 2
 
     /// A list of peers, as the core's read-only views return them.
     public static func encoded(peers: [PeerID]) -> Data {
@@ -331,6 +331,10 @@ struct CodecWriter {
         case .setContentSource(let present):
             uint8(5)
             bool(present)
+        case let .setRelaying(peer, relays):
+            uint8(6)
+            string(peer.publicKey)
+            bool(relays)
         }
     }
 
@@ -726,6 +730,8 @@ struct CodecReader {
                 rootCID: try string(), servedBy: PeerID(publicKey: try string()))
         case 5:
             return .setContentSource(try bool())
+        case 6:
+            return .setRelaying(PeerID(publicKey: try string()), try bool())
         default:
             throw Malformed()
         }

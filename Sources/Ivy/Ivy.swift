@@ -357,6 +357,15 @@ public actor Ivy {
         }
     }
 
+    /// Says whether a connected peer relays. When a peer cannot be dialled,
+    /// the node asks the peers it was told relay for a route to it, after
+    /// its configured carriers. Say so only of a peer that said it does: one
+    /// that does not relay ends the session of a peer that asks. Forgotten
+    /// when the peer's session ends.
+    public func setRelaying(_ peer: PeerID, _ relays: Bool) {
+        apply(.command(.setRelaying(peer, relays)))
+    }
+
     public func disconnect(_ peer: PeerID) {
         apply(.command(.disconnect(peer)))
     }

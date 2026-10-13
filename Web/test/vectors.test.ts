@@ -80,7 +80,7 @@ test('truncated and malformed bytes are refused', () => {
     }
     assert.throws(() => decode(new Uint8Array([...bytes, 0])), vector.description);
   }
-  assert.throws(() => decodeEvent(new Uint8Array([2, 0])), 'another version');
+  assert.throws(() => decodeEvent(new Uint8Array([version + 1, 0])), 'another version');
   assert.throws(() => decodeEvent(new Uint8Array([1, 14])), 'unknown event');
   assert.throws(() => decodeEffect(new Uint8Array([1, 14])), 'unknown effect');
   // A topic that is not UTF-8.

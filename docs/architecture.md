@@ -301,7 +301,14 @@ zone.
 
 ## Relay and attribution
 
-Outbound relay initiation uses configured carriers. A target may accept an
+Outbound relay initiation uses configured carriers, and after them the
+connected peers the application said relay (`setRelaying`), at most four for
+one connect, in key order. One with no session to the target says so at
+once, and the next is asked. A peer is asked only if it was said to relay
+because one that does not takes the request as a violation and ends the
+session; what was said of a peer is forgotten with its session. Peers do
+not say in the handshake whether they relay, so that is for the application
+to learn, in its own first message for one. A target may accept an
 inbound route offered by another authenticated direct peer without configuring
 that peer as its carrier. The route grants transport only: endpoint records
 remain signed end to end, so the offer cannot change either endpoint identity
