@@ -60,12 +60,12 @@ node=$($SWIFT build --show-bin-path)/IvyWebSocketTestNode
 (cd Web && IVY_TEST_NODE=$node npm test)
 
 size() { wc -c < "$1" | awk '{ printf "%.2f MiB", $1 / 1048576 }'; }
-for wasm in "$wasm" Web/dist/ivy.wasm; do
-    echo "$(basename "$wasm"): $(size "$wasm")"
-    if command -v wasm-opt > /dev/null 2>&1; then
-        wasm-opt "$wasm" --strip-debug --strip-dwarf --strip-producers -Os -o "$wasm.opt"
-        echo "  optimised: $(size "$wasm.opt")"
-        gzip -9 -c "$wasm.opt" > "$wasm.opt.gz"
-        echo "  gzip:      $(size "$wasm.opt.gz")"
-    fi
-done
+# Web/build.sh optimised dist/ivy.wasm already, and the tests above ran on it.
+echo "ivy.wasm: $(size Web/dist/ivy.wasm), gzip $(gzip -9 -c Web/dist/ivy.wasm | wc -c | awk '{ printf "%.2f MiB", $1 / 1048576 }')"
+echo "$(basename "$wasm"): $(size "$wasm")"
+if command -v wasm-opt > /dev/null 2>&1; then
+    wasm-opt "$wasm" --strip-debug --strip-dwarf --strip-producers -Os -o "$wasm.opt"
+    echo "  optimised: $(size "$wasm.opt")"
+    gzip -9 -c "$wasm.opt" > "$wasm.opt.gz"
+    echo "  gzip:      $(size "$wasm.opt.gz")"
+fi

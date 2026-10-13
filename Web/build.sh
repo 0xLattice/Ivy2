@@ -22,7 +22,21 @@ done
 [ "$status" -eq 0 ] || exit "$status"
 wasm=$(find .build-wasm -type f -name IvyWasm.wasm -path '*elease*' | head -1)
 mkdir -p Web/dist
-cp "$wasm" Web/dist/ivy.wasm
+# What a page fetches: without debug information, and optimised for size.
+# About 9 MiB, 3 MiB compressed, from 29 as built.
+if command -v wasm-opt > /dev/null 2>&1; then
+    wasm-opt "$wasm" --strip-debug --strip-dwarf --strip-producers -Os -o Web/dist/ivy.wasm
+else
+    echo "wasm-opt (binaryen) is not installed: dist/ivy.wasm is as built, three times the size"
+    cp "$wasm" Web/dist/ivy.wasm
+fi
+# swift-crypto's manifest adds a resource when the machine building is a Mac,
+# whatever it builds for, and the code SwiftPM generates to find it links all
+# of Foundation and its ICU tables: some 40 MiB more. Built on Linux it does not.
+if [ "$(uname)" = Darwin ]; then
+    echo "built on macOS: dist/ivy.wasm carries Foundation and ICU; build on Linux for a page"
+fi
+wc -c < Web/dist/ivy.wasm | awk '{ printf "dist/ivy.wasm: %.1f MiB\n", $1 / 1048576 }'
 
 cd Web
 [ -d node_modules ] || npm ci
