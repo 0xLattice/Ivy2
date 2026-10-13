@@ -5,7 +5,8 @@
 #      toolchain's Wasm runtime;
 #   2. the probe, built natively and for Wasm, must print the same lines;
 #   3. the core as a module (IvyWasm), driven by the JavaScript shell in
-#      Web/ through its own tests.
+#      Web/ through its own tests, which also reach a native node
+#      (IvyWebSocketTestNode) over a real WebSocket.
 #
 # Needs a swift.org toolchain with its matching Wasm SDK (not Xcode's), and
 # Node 22 or later for steps 2 and 3. Set IVY_WASM_SDK to the SDK's id, as `swift sdk list`
@@ -35,12 +36,14 @@ IVY_CORE_ONLY=1 $SWIFT test --swift-sdk "$SDK" --scratch-path .build-wasm
 echo "== probe, native"
 build $SWIFT build -c release --package-path Wasm/probe
 native=$(find Wasm/probe/.build -type f -name probe -perm -u+x ! -path '*wasm*' | head -1)
+echo "-- running $native"
 "$native" > Wasm/probe/.build/native.out
 cat Wasm/probe/.build/native.out
 
 echo "== probe, WebAssembly"
 build env IVY_CORE_ONLY=1 $SWIFT build -c release --swift-sdk "$SDK" --package-path Wasm/probe --scratch-path Wasm/probe/.build-wasm
 wasm=$(find Wasm/probe/.build-wasm -type f -name probe.wasm | head -1)
+echo "-- running $wasm under $(node --version)"
 node --no-warnings Wasm/run-wasi.mjs "$wasm" > Wasm/probe/.build/wasm.out
 cat Wasm/probe/.build/wasm.out
 
@@ -52,7 +55,9 @@ echo "PASS: the native and WebAssembly builds agree"
 
 echo "== the module, driven from JavaScript"
 SWIFT=$SWIFT IVY_WASM_SDK=$SDK Web/build.sh
-(cd Web && npm test)
+build $SWIFT build --product IvyWebSocketTestNode
+node=$($SWIFT build --show-bin-path)/IvyWebSocketTestNode
+(cd Web && IVY_TEST_NODE=$node npm test)
 
 size() { wc -c < "$1" | awk '{ printf "%.2f MiB", $1 / 1048576 }'; }
 for wasm in "$wasm" Web/dist/ivy.wasm; do

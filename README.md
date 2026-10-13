@@ -168,8 +168,9 @@ IVY_WASM_SDK=swift-6.4.0-RELEASE_wasm Web/build.sh
 cd Web && npm test
 ```
 
-It takes its connections as `Transport`s. WebSocket and WebRTC transports,
-signalling and storage are not written yet; an in-memory pair is.
+It takes its connections as `Transport`s: a WebSocket to a node listening as
+below, or an in-memory pair. It keeps the Volumes it serves in IndexedDB,
+within a budget. A WebRTC transport and signalling are not written yet.
 
 A browser cannot open a TCP connection either. `IvyWebSocket` lets a node
 accept its peers over WebSocket, and dial other nodes the same way:

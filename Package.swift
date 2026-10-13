@@ -89,6 +89,15 @@ if coreOnly {
                 .product(name: "NIOWebSocket", package: "swift-nio"),
             ]
         ),
+        // A node for Web/'s tests to reach over a real WebSocket.
+        .executableTarget(
+            name: "IvyWebSocketTestNode",
+            dependencies: [
+                "IvyWebSocket",
+                "Ivy",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
+        ),
         .testTarget(
             name: "IvyTests",
             dependencies: [
