@@ -30,6 +30,9 @@ final class TCPPunchSocket: PunchSocket, @unchecked Sendable {
     /// One try at a candidate, and the pause before the next.
     static let connectTimeout = TimeAmount.milliseconds(1_500)
     static let retryInterval = Duration.milliseconds(100)
+    /// Spelled out: the name for it is newer than the oldest NIO Ivy builds with.
+    static let reusePort = ChannelOptions.Types.SocketOption(
+        level: SocketOptionLevel(SOL_SOCKET), name: SO_REUSEPORT)
 
     private let group: EventLoopGroup
     private let lock = NSLock()
@@ -56,7 +59,7 @@ final class TCPPunchSocket: PunchSocket, @unchecked Sendable {
     func listen() async -> Bool {
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
-            .serverChannelOption(.socketOption(.so_reuseport), value: 1)
+            .serverChannelOption(Self.reusePort, value: 1)
             .childChannelOption(.autoRead, value: false)
             .childChannelInitializer { [weak self] channel in
                 let stream = TCPStream(channel: channel)
@@ -131,7 +134,7 @@ final class TCPPunchSocket: PunchSocket, @unchecked Sendable {
               let remote = try? SocketAddress(ipAddress: target.host, port: Int(target.port)) else { return nil }
         return try? await ClientBootstrap(group: group)
             .channelOption(.socketOption(.so_reuseaddr), value: 1)
-            .channelOption(.socketOption(.so_reuseport), value: 1)
+            .channelOption(Self.reusePort, value: 1)
             .channelOption(.autoRead, value: false)
             .connectTimeout(Self.connectTimeout)
             .channelInitializer { $0.pipeline.addHandler(TCPStream(channel: $0)) }
