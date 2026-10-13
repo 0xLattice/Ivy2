@@ -418,9 +418,13 @@ extension IvyCore {
         let role: AuthenticatedPeerRole = config.isConfiguredCarrier(peerKey) ? .carrier : .endpoint
         let existing = sessions[peerKey]
 
-        // Simultaneous sessions converge on the smaller session ID.
+        // Two sessions with one peer converge on one, and both ends must
+        // choose the same. A direct session is kept over a relayed one:
+        // that is how two peers that met through a carrier move to a
+        // connection of their own. Between two of a kind, the smaller
+        // session ID is kept.
         if let existing, isLive(existing.link),
-           existing.sessionID == min(existing.sessionID, sessionID) {
+           keepsExistingSession(existing, over: sessionID, direct: link.isDirect) {
             resolveResponderWaiter(for: peerKey, result: true)
             removeLink(id, notifyTransport: true)
             if let op = pending.op { authResults.append((op, true)) }
@@ -508,6 +512,12 @@ extension IvyCore {
         session.op = nil
         sessions[key] = session
         authResults.append((op, true))
+    }
+
+    private func keepsExistingSession(_ existing: Session, over sessionID: SessionID, direct: Bool) -> Bool {
+        let existingIsDirect = links[existing.link]?.isDirect ?? false
+        if existingIsDirect != direct { return existingIsDirect }
+        return existing.sessionID == min(existing.sessionID, sessionID)
     }
 
     func canPromote(_ link: Link, peerKey: PeerKey, isInbound: Bool) -> Bool {

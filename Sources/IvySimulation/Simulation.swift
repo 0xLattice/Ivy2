@@ -258,12 +258,14 @@ public final class Simulation {
 
     /// Joins two nodes with a connection neither dialled, as a transport
     /// that establishes its own streams would: `b` is told of it as inbound,
-    /// and `a` is asked to connect to `b` over it. `observedHost` overrides
-    /// the host `a` is told its peer was observed at.
+    /// and `a` is asked to connect to `b` over it. `expecting` names a peer
+    /// other than `b` as the one `a` believes it reaches. `observedHost`
+    /// overrides the host `a` is told its peer was observed at.
     @discardableResult
     public func requestConnectOver(
         from a: Node,
         to b: Node,
+        expecting endpoint: PeerEndpoint? = nil,
         observedHost: String?? = nil
     ) -> (request: RequestID, connection: ConnectionID) {
         nextPipe += 1
@@ -276,7 +278,7 @@ public final class Simulation {
             to: b)
         let id = request(
             .connectOver(
-                b.endpoint, near, observedHost: observedHost ?? b.host, localHost: a.host),
+                endpoint ?? b.endpoint, near, observedHost: observedHost ?? b.host, localHost: a.host),
             on: a)
         return (id, near)
     }

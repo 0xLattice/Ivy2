@@ -289,6 +289,19 @@ or place the carrier in endpoint routing. A carrier forwards each route in
 arrival order to its exact destination session, waits only until
 `requestTimeout` for writability, and then retires that route.
 
+Two peers that met through a carrier can move to a connection of their own.
+One of them supplies a stream to `connect(to:over:)`: the handshake runs
+beside the relayed session, and the direct session it makes replaces it. Both
+ends choose the same way, by one rule: a direct session is kept over a relayed
+one, and between two of a kind the smaller session ID is kept. The
+application hears `peerConnected` for the new session and no disconnect, and
+the route through the carrier is closed. Records in flight on the relayed
+session when it is replaced are not resent. If the handshake fails the stream
+is closed and the relayed session stays; `connect` still reports the peer
+connected, so the caller reads the session's route to tell which it has. A
+peer on 15.x keeps the smaller ID whatever the route, so the two ends can
+disagree and drop the session: only upgrade toward a peer on this rule.
+
 Being a carrier is the configuring node's own choice, which the carrier cannot
 see: to it, that node is one more peer to query and gossip to. So a node takes
 only keepalives and relay control from a configured carrier and drops whatever
