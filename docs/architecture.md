@@ -338,6 +338,65 @@ ambiguous because a carrier can replay a valid record.
 Timeouts, failed dials, unavailable content, and local queue pressure remain
 route or service state, not protocol violations.
 
+## Node to node, behind NATs
+
+Two nodes that cannot be dialled reach each other the same way two browsers
+do, with another kind of stream. `PunchConnector` (`Sources/Ivy`) stands
+between a node and its delegate. When a relayed session to an endpoint
+appears, the two connectors exchange addresses on it, as peer messages on the
+topic `ivy.punch/1`, and then both connect at the same moment. Each one's
+first packet opens its own NAT for the other's. The stream that results is
+given to `connect(to:over:)` at one end and `accept` at the other, and the
+direct session replaces the relayed one as above. The core knows nothing of
+it.
+
+A signalling message is one byte of kind, a big-endian `u32` naming the
+attempt, and a body:
+
+| Kind | | Attempt | Body |
+| --- | --- | --- | --- |
+| 0 | request: "offer to me" | 0 | none |
+| 1 | offer | the offerer's choice, not 0 | the offerer's candidates |
+| 2 | answer | the offer's | the answerer's candidates |
+| 3 | sync: "connect now" | the offer's | none |
+| 4 | abandon | the offer's | none |
+
+Candidates are a count of 1 to 8, then for each its transport (1 TCP, 2
+QUIC), its port as a big-endian `u16`, and its host as a length byte and
+UTF-8 text of at most 64 bytes.
+
+- The peer with the smaller public key offers, always; the other asks. It is
+  also the one that starts the handshake over the stream, whichever end the
+  connection was made from.
+- The offerer measures the round trip from its offer to the answer, sends
+  the sync, and waits half of it before connecting, so both start together.
+- A candidate is dialled only if it is a public address and of a transport
+  this node has. A peer names its own addresses, and without that it could
+  aim a dial at a host inside this node's network.
+- Signalling counts only on the relayed session to an endpoint that is the
+  peer's session now; anything else on the topic is dropped, and the
+  application never sees the topic.
+- One attempt per peer at a time, three for one relayed session, eight at
+  once. An attempt takes at most eight messages of at most 1 KiB, both ends
+  dial for six seconds, and it ends after fifteen, or when its peer abandons
+  it, or on anything malformed. The relayed session is left as it was.
+  Nothing about signalling ends a session.
+
+A transport is a `PunchTransport`. `TCPPunch` is the one there is: each end
+takes a port of the system's choosing, listens on it, and connects from it
+to the port the other named, again and again until the window closes. Both
+ends leave from the port the other aims at, so they can only have made one
+connection, whether the two first packets crossed (a simultaneous open) or
+one arrived after the other end's NAT had opened. It tells its peer the
+port it bound, so it needs a NAT that keeps a connection's port; one that
+gives each connection another port cannot be reached this way, and those
+peers stay relayed. IPv4 only.
+
+`Punch/run.sh` checks this on Linux with network namespaces: two nodes
+behind NATs that are first shown to refuse a stranger, NATs that drop and
+NATs that reset what they did not ask for, and a NAT that changes ports,
+where the two must stay on the relayed session.
+
 ## Browser to browser
 
 Two browsers reach each other over a WebRTC data channel, which `Web/` sets up

@@ -63,6 +63,20 @@ jobs:
       - name: The core as WebAssembly passes its suite, matches the native build and runs under the JavaScript shell
         run: Wasm/run.sh
 
+  punch:
+    runs-on: ubuntu-latest
+    # Privileged, to make network namespaces and NAT rules.
+    container:
+      image: swift:6.4.0
+      options: --privileged
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install iproute2 and iptables
+        run: apt-get update && apt-get install -y --no-install-recommends iproute2 iptables
+      - name: Two nodes behind NATs of their own connect directly
+        run: Punch/run.sh
+
   interop:
     runs-on: macos-26
     timeout-minutes: 30

@@ -197,6 +197,24 @@ its own address from the node it is connected to and from no one else. Behind
 a proxy, forward UDP on the port browsers dial to the listener's;
 `stun: false` leaves it out.
 
+Two nodes behind NATs cannot dial each other either. When they have met
+through a node that relays, `PunchConnector` moves them to a connection of
+their own: they tell each other where they are over the relayed session and
+both connect at the same moment, so each one's first packet opens its own NAT
+to the other's.
+
+```swift
+let punch = PunchConnector(ivy: ivy, localKey: config.publicKey, forwardingTo: delegate)
+// Make `punch` the node's delegate, and keep hold of it: it passes on to
+// `delegate` everything but its own topic, and a node holds its delegate weakly.
+try await ivy.start()
+// A relayed session to an endpoint is upgraded as it appears.
+```
+
+Where the NATs do not allow it the relayed session stays as it was.
+`Punch/run.sh` puts two nodes behind NATs of their own, on Linux, and checks
+both outcomes.
+
 Two browsers cannot accept a connection from each other at all, so they meet
 through a node both are connected to, one that has `relayEnabled`. `Web/`'s
 `RtcConnector` then signals a WebRTC data channel over that relayed session
