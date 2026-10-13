@@ -52,12 +52,14 @@ jobs:
         with:
           node-version: 22
       - name: Install binaryen
-        run: apt-get update && apt-get install -y --no-install-recommends binaryen
+        run: apt-get update && apt-get install -y --no-install-recommends binaryen curl ca-certificates
+      # Fetched with curl: the toolchain's own downloader sometimes aborts
+      # after the download completes. The checksum is still the toolchain's
+      # to verify.
       - name: Install the WebAssembly SDK
-        run: >-
-          swift sdk install
-          https://download.swift.org/swift-6.4.0-release/wasm-sdk/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE_wasm.artifactbundle.tar.gz
-          --checksum f07b7be3c586d92d7a07051fc6d303b87ebea67eadc40640ba59d5a8b79aa86d
+        run: |
+          curl -fsSL --retry 3 -o /tmp/wasm-sdk.tar.gz https://download.swift.org/swift-6.4.0-release/wasm-sdk/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE_wasm.artifactbundle.tar.gz
+          swift sdk install /tmp/wasm-sdk.tar.gz --checksum f07b7be3c586d92d7a07051fc6d303b87ebea67eadc40640ba59d5a8b79aa86d
       - name: The core as WebAssembly passes its suite and matches the native build
         run: Wasm/run.sh
 
