@@ -93,7 +93,7 @@ enum Message: Sendable {
         maxFrameSize: UInt32,
         relayed: Bool
     ) -> Int? {
-        var remaining = Int(maxFrameSize)
+        var remaining = Int(clamping: maxFrameSize)
         guard consume(SessionWireRecord.dataRecordOverhead, from: &remaining) else {
             return nil
         }
@@ -114,7 +114,7 @@ enum Message: Sendable {
     func serialize(maxFrameSize: UInt32 = IvyConfig.defaultProtocolMaxFrameSize) -> Data {
         var bytes = Data()
         guard encode(into: &bytes, maxDataPayload: maxFrameSize),
-              bytes.count <= Int(maxFrameSize) else { return Data() }
+              bytes.count <= Int(clamping: maxFrameSize) else { return Data() }
         return bytes
     }
 
@@ -469,7 +469,7 @@ extension Data {
         _ data: Data,
         maxDataPayload: UInt32 = IvyConfig.defaultProtocolMaxFrameSize
     ) -> Bool {
-        guard data.count <= Int(maxDataPayload) else { return false }
+        guard data.count <= Int(clamping: maxDataPayload) else { return false }
         appendUInt32(UInt32(data.count))
         append(data)
         return true

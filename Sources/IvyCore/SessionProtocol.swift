@@ -426,14 +426,14 @@ enum SessionWireRecord: Sendable, Equatable {
             bytes.append(finish.receiver.rawRepresentation)
             bytes.append(finish.signature)
         case .data(let record):
-            guard record.payload.count <= Int(maxPayload), record.signature.count == 64 else { return Data() }
+            guard record.payload.count <= Int(clamping: maxPayload), record.signature.count == 64 else { return Data() }
             bytes.appendUInt8(4)
             bytes.append(record.sessionID.bytes)
             bytes.appendUInt64(record.sequence)
             guard bytes.appendSessionData(record.payload) else { return Data() }
             bytes.append(record.signature)
         }
-        return bytes.count <= Int(maxPayload) ? bytes : Data()
+        return bytes.count <= Int(clamping: maxPayload) ? bytes : Data()
     }
 
     static func deserialize(_ data: Data, maxPayload: UInt32 = IvyConfig.defaultProtocolMaxFrameSize) throws -> Self {
@@ -475,7 +475,7 @@ enum SessionWireRecord: Sendable, Equatable {
         case 4:
             guard let sidBytes = reader.read(count: 32),
                   let sequence = reader.readUInt64(), sequence > 0,
-                  let payload = reader.readData(max: Int(maxPayload)),
+                  let payload = reader.readData(max: Int(clamping: maxPayload)),
                   let signature = reader.read(count: 64), reader.isAtEnd else {
                 throw SessionProtocolError.malformed
             }
@@ -505,8 +505,8 @@ private enum SessionDomains {
 
 private extension Data {
     mutating func appendSessionData(_ value: Data) -> Bool {
-        guard value.count <= Int(UInt32.max) else { return false }
-        appendUInt32(UInt32(value.count))
+        guard let count = UInt32(exactly: value.count) else { return false }
+        appendUInt32(count)
         append(value)
         return true
     }

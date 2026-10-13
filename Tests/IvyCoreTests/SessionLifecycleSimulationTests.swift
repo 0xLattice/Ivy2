@@ -902,7 +902,7 @@ final class SessionLifecycleSimulationTests: XCTestCase {
         let bases: [Int64] = [500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]
         var expected: [Duration] = [.zero]
         for base in bases {
-            let jitter = Int64(UInt64.random(in: 0...250, using: &random))
+            let jitter = Int64(random.below(251))
             // A dial fails one latency after it is asked for; the next
             // follows the failure by the backoff.
             expected.append(expected.last! + sim.latency + .milliseconds(base + jitter))

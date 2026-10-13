@@ -7,6 +7,11 @@ public struct IvyConfig: Sendable {
     /// `protocolMaxFrameSize` instance field, and negotiated per connection (a
     /// node never sends a frame larger than the peer advertised it will accept).
     public static let defaultProtocolMaxFrameSize: UInt32 = 4 * 1024 * 1024
+    /// The largest frame size this platform can account for: a connection's
+    /// inbound budget, two frames and a header, must fit in an `Int`. That is
+    /// every `UInt32` where `Int` is 64 bits and about 1 GiB where it is 32,
+    /// as on WebAssembly.
+    static let largestFrameSize = UInt32(clamping: (Int.max - 4) / 2)
     public static let defaultMaxConnections = 256
     public static let defaultMaxInboundBufferedBytes = 64 * 1024 * 1024
     public static let defaultMaxRoutesPerIdentity = 3
@@ -154,7 +159,11 @@ public struct IvyConfig: Sendable {
             throw IvyModeError.invalidConfiguration(
                 "reserved outbound connection slots must fit within maxConnections")
         }
-        guard maxInboundBufferedBytes >= Int(protocolMaxFrameSize) + 4 else {
+        guard protocolMaxFrameSize <= Self.largestFrameSize else {
+            throw IvyModeError.invalidConfiguration(
+                "frame size is larger than this platform can account for")
+        }
+        guard maxInboundBufferedBytes >= Int(clamping: protocolMaxFrameSize) + 4 else {
             throw IvyModeError.invalidConfiguration(
                 "inbound byte budget must hold one maximum frame")
         }
@@ -166,7 +175,7 @@ public struct IvyConfig: Sendable {
               maxProviderTTLSeconds > 0,
               maxProviderRecordsPerPeer > 0,
               maxInFlightVolumeBytes > 0,
-              Int(protocolMaxFrameSize) >= SessionWireRecord.maxRelayedHandshakeRecordSize else {
+              Int(clamping: protocolMaxFrameSize) >= SessionWireRecord.maxRelayedHandshakeRecordSize else {
             throw IvyModeError.invalidConfiguration(
                 "route, provider-TTL, volume, or frame-size limits are invalid")
         }
