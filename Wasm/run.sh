@@ -5,7 +5,8 @@
 #      toolchain's Wasm runtime;
 #   2. the probe, built natively and for Wasm, must print the same lines;
 #   3. the core as a module (IvyWasm), driven by the JavaScript shell in
-#      Web/ through its own tests.
+#      Web/ through its own tests, which also reach a native node
+#      (IvyWebSocketTestNode) over a real WebSocket.
 #
 # Needs a swift.org toolchain with its matching Wasm SDK (not Xcode's), and
 # Node 22 or later for steps 2 and 3. Set IVY_WASM_SDK to the SDK's id, as `swift sdk list`
@@ -52,7 +53,9 @@ echo "PASS: the native and WebAssembly builds agree"
 
 echo "== the module, driven from JavaScript"
 SWIFT=$SWIFT IVY_WASM_SDK=$SDK Web/build.sh
-(cd Web && npm test)
+build $SWIFT build --product IvyWebSocketTestNode
+node=$($SWIFT build --show-bin-path)/IvyWebSocketTestNode
+(cd Web && IVY_TEST_NODE=$node npm test)
 
 size() { wc -c < "$1" | awk '{ printf "%.2f MiB", $1 / 1048576 }'; }
 for wasm in "$wasm" Web/dist/ivy.wasm; do

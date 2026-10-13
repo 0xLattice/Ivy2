@@ -109,6 +109,13 @@ The listener does not look at `Origin`. Any page may open a socket, as any
 peer may open a TCP connection; what it can do is decided by the session
 handshake.
 
+The other end in a page is `Web/src/websocket.ts`, over the browser's own
+WebSocket. That one cannot be read on request: every message is handed over
+as it arrives, so a connection the core holds back is not held in the kernel
+there but in a queue in the page. A peer there cannot be slowed, only
+dropped: the stream closes when 128 MiB waits unread. It sends messages of
+at most 64 KiB, and delivers at most that much for each request.
+
 The core also builds for WebAssembly, where `Int` is 32 bits, and gives the
 same trace there as natively. Two rules keep that true: a size limit is
 clamped when it becomes an `Int`, never converted outright, and random draws
