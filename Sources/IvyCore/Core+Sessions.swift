@@ -583,6 +583,7 @@ extension IvyCore {
         let key = ref.key
         sessions.removeValue(forKey: key)
         sessionKeyByLink.removeValue(forKey: ref.link)
+        relayingPeers.remove(key)
         if session.role == .endpoint {
             router.removePeer(key.peerID)
             cleanupPendingForPeer(key.peerID)

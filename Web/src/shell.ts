@@ -135,6 +135,13 @@ export class Ivy {
     if (this.contentSource !== null) this.command({ kind: 'setContentSource', present: true });
   }
 
+  /// Says whether a connected peer relays, so the core may ask it for a
+  /// route to a peer it cannot dial. Say so only of a peer that said it
+  /// does: one that does not relay ends the session of a peer that asks.
+  setRelaying(peer: PeerID, relays: boolean) {
+    this.command({ kind: 'setRelaying', peer, relays });
+  }
+
   setContentSource(source: ContentSource | null) {
     this.contentSource = source;
     this.command({ kind: 'setContentSource', present: source !== null });

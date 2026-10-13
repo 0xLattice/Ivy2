@@ -93,6 +93,8 @@ final class EventCodecTests: XCTestCase {
          .command(.reportDeficientContent(rootCID: "root", servedBy: peer))),
         ("command: setContentSource, present", .command(.setContentSource(true))),
         ("command: setContentSource, absent", .command(.setContentSource(false))),
+        ("command: setRelaying", .command(.setRelaying(peer, true))),
+        ("command: setRelaying, not", .command(.setRelaying(peer, false))),
         ("delivered", .delivered(DeliveryToken(21))),
         ("jobFinished: entries",
          .jobFinished(JobID(30), .entries([
@@ -229,6 +231,7 @@ final class EventCodecTests: XCTestCase {
             case .announceProvider: return "command.announceProvider"
             case .reportDeficientContent: return "command.reportDeficientContent"
             case .setContentSource: return "command.setContentSource"
+            case .setRelaying: return "command.setRelaying"
             }
         case .delivered: return "delivered"
         case .jobFinished(_, .entries): return "jobFinished.entries"
@@ -291,7 +294,7 @@ final class EventCodecTests: XCTestCase {
     }
 
     func testEveryCaseHasASample() {
-        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 35)
+        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 36)
         XCTAssertEqual(Set(Self.effects.map { name($0.1) }).count, 37)
         XCTAssertEqual(Set(Self.events.map(\.0)).count, Self.events.count, "descriptions repeat")
         XCTAssertEqual(Set(Self.effects.map(\.0)).count, Self.effects.count, "descriptions repeat")
@@ -391,7 +394,7 @@ final class EventCodecTests: XCTestCase {
 
         XCTAssertNil(Event(encoded: Data()))
         XCTAssertNil(Event(encoded: Data([0, 0])), "version 0")
-        XCTAssertNil(Event(encoded: Data([2, 0])), "version 2")
+        XCTAssertNil(Event(encoded: Data([EventCodec.version + 1, 0])), "the next version")
         XCTAssertNil(event { $0.uint8(14) }, "unknown event")
         XCTAssertNil(effect { $0.uint8(14) }, "unknown effect")
         XCTAssertNil(event { $0.uint8(8); $0.uint64(1); $0.uint8(14) }, "unknown request")
@@ -590,7 +593,7 @@ final class EventCodecTests: XCTestCase {
             XCTAssertNil(IvyConfig(encoded: bytes.prefix(length)), "cut to \(length)")
         }
         XCTAssertNil(IvyConfig(encoded: bytes + [0]))
-        XCTAssertNil(IvyConfig(encoded: Data([2]) + bytes.dropFirst()), "another version")
+        XCTAssertNil(IvyConfig(encoded: Data([EventCodec.version + 1]) + bytes.dropFirst()), "another version")
         XCTAssertNil(config([4: { $0.uint8(3) }]), "unknown mode")
         XCTAssertNil(config([1: { $0.uint32(.max) }]), "a count beyond the input")
         // A limit beyond `Int` is the largest one, and is left for

@@ -72,8 +72,10 @@ final class TCPPunchSocket: PunchSocket, @unchecked Sendable {
         return true
     }
 
+    /// Both ends do the same: a TCP connection has no side until it is made.
     func connect(
         to candidates: [PunchCandidate],
+        initiator: Bool,
         deadline: ContinuousClock.Instant
     ) async -> (any TransportConnection)? {
         let targets = candidates.filter { $0.transport == PunchCandidate.tcp && !$0.host.contains(":") }

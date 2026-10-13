@@ -35,7 +35,9 @@ private struct NoPath: PunchTransport {
 
     struct Socket: PunchSocket {
         let port: UInt16 = 9
-        func connect(to candidates: [PunchCandidate], deadline: ContinuousClock.Instant) async -> (any TransportConnection)? {
+        func connect(
+            to candidates: [PunchCandidate], initiator: Bool, deadline: ContinuousClock.Instant
+        ) async -> (any TransportConnection)? {
             try? await Task.sleep(until: deadline, clock: .continuous)
             return nil
         }
@@ -61,6 +63,14 @@ final class PunchConnectorTests: XCTestCase {
         let carrier: Ivy
         let a: End
         let b: End
+
+        /// Whom each end heard disconnect, by name: nobody, in every test.
+        var disconnects: [String] {
+            let names = [carrier.id: "the carrier", a.node.id: "a", b.node.id: "b"]
+            return [("a", a), ("b", b)].flatMap { name, end in
+                end.heard.disconnects.map { "\(name) heard \(names[$0] ?? $0.publicKey) disconnect" }
+            }
+        }
 
         /// The end that makes the offer, and the one that asks for it.
         var offerer: End { a.node.publicKey < b.node.publicKey ? a : b }
@@ -172,7 +182,7 @@ final class PunchConnectorTests: XCTestCase {
         XCTAssertTrue(upgraded)
         let direct = await eventually { t.a.isDirect && t.b.isDirect }
         XCTAssertTrue(direct)
-        XCTAssertEqual(t.a.heard.disconnects + t.b.heard.disconnects, [])
+        XCTAssertEqual(t.disconnects, [])
     }
 
     func testBothEndsStartingAtOnceMakeOneConnection() async throws {
@@ -190,7 +200,7 @@ final class PunchConnectorTests: XCTestCase {
         let t = try await triangle { $0.autoUpgrade = true }
         let direct = await eventually { t.a.isDirect && t.b.isDirect }
         XCTAssertTrue(direct)
-        XCTAssertEqual(t.a.heard.disconnects + t.b.heard.disconnects, [])
+        XCTAssertEqual(t.disconnects, [])
     }
 
     func testAnAttemptThatCannotConnectLeavesTheRelayedSession() async throws {
@@ -211,7 +221,7 @@ final class PunchConnectorTests: XCTestCase {
 
         XCTAssertFalse(t.a.isDirect)
         XCTAssertEqual(t.a.sessions.count, 1)
-        XCTAssertEqual(t.a.heard.disconnects + t.b.heard.disconnects, [])
+        XCTAssertEqual(t.disconnects, [])
         let sent = await t.a.node.sendMessage(to: t.b.node.id, topic: "t", payload: Data("relayed".utf8))
         guard case .enqueued(_, .relayed) = sent else { return XCTFail("the relayed session is gone: \(sent)") }
     }
@@ -222,7 +232,7 @@ final class PunchConnectorTests: XCTestCase {
         XCTAssertFalse(upgraded, "the peer offered 127.0.0.1")
         XCTAssertFalse(t.a.isDirect)
         XCTAssertFalse(t.b.isDirect)
-        XCTAssertEqual(t.a.heard.disconnects + t.b.heard.disconnects, [])
+        XCTAssertEqual(t.disconnects, [])
     }
 
     func testSignallingThatIsMalformedOrFromElsewhereCostsNoSession() async throws {
@@ -240,7 +250,7 @@ final class PunchConnectorTests: XCTestCase {
         _ = await t.carrier.sendMessage(
             to: t.b.node.id, topic: PunchConnector.topic, payload: Data([0, 0, 0, 0, 0]))
         try await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertEqual(t.a.heard.disconnects + t.b.heard.disconnects, [])
+        XCTAssertEqual(t.disconnects, [])
         XCTAssertEqual(t.a.heard.messages + t.b.heard.messages, [], "the topic is the connector's")
 
         // And the pair can still be upgraded.

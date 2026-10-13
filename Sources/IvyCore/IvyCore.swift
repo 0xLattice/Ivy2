@@ -30,6 +30,9 @@ public struct IvyCore: Sendable {
     public internal(set) var isRunning = false
     public internal(set) var publicAddress: ObservedAddress?
     var hasContentSource = false
+    /// Connected endpoints the application says relay. A peer that does not
+    /// relay ends the session of one that asks it to, so only these are asked.
+    var relayingPeers: Set<PeerKey> = []
     var router: Router
 
     // MARK: Links and sessions
@@ -133,6 +136,8 @@ public struct IvyCore: Sendable {
     static let directRouteBinding = Data(repeating: 0, count: 32)
     static let maxRelayRoutes = 64
     static let maxRelayRoutesPerPeer = 8
+    /// Peers known to relay that one connect asks, after the carriers.
+    static let maxRelayingPeersAsked = 4
     static let relayIdleTimeout: Duration = .seconds(300)
     static let pendingSessionTimeout: Duration = .seconds(30)
     static let reconnectBaseDelayMs: UInt64 = 500
@@ -504,6 +509,13 @@ public struct IvyCore: Sendable {
             reportDeficientContent(rootCID: rootCID, servedBy: peer)
         case .setContentSource(let present):
             hasContentSource = present
+        case let .setRelaying(peer, relays):
+            guard let key = try? PeerKey(peer.publicKey) else { return }
+            if relays, endpointSession(for: key) != nil {
+                relayingPeers.insert(key)
+            } else {
+                relayingPeers.remove(key)
+            }
         }
     }
 
