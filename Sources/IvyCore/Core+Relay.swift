@@ -97,7 +97,9 @@ extension IvyCore {
         sendRelayControlResult(message, to: key) == .sent
     }
 
-    mutating func sendRelayControlResult(_ message: Message, to key: PeerKey) -> LinkSendResult {
+    mutating func sendRelayControlResult(
+        _ message: Message, to key: PeerKey, reserve: Bool? = nil
+    ) -> LinkSendResult {
         let session: Session?
         if let carrier = carrierSession(for: key) {
             session = carrier
@@ -109,7 +111,7 @@ extension IvyCore {
             session = nil
         }
         guard let session else { return .notConnected }
-        switch enqueue(message, on: session.ref) {
+        switch enqueue(message, on: session.ref, reserve: reserve) {
         case .enqueued:
             return .sent
         case .backpressured:
