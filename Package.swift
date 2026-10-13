@@ -18,7 +18,7 @@ var products: [Product] = [
 ]
 
 var dependencies: [Package.Dependency] = [
-    .package(url: "https://github.com/adalinxx/Tally.git", from: "3.1.0"),
+    .package(url: "https://github.com/adalinxx/Tally.git", from: "3.1.1"),
     // From 4.0 swift-crypto needs only FoundationEssentials, which keeps a
     // WebAssembly build small; the 3.x line still works everywhere else.
     .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"6.0.0"),

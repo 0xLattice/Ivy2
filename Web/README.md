@@ -27,6 +27,16 @@ IVY_WASM_SDK=swift-6.4.0-RELEASE_wasm Web/build.sh   # dist/ivy.wasm and dist/**
 cd Web && npm test
 ```
 
+With `wasm-opt` (binaryen) installed the module is stripped and optimised:
+about 9 MiB, 3 MiB compressed, from 29 as built.
+
+On a Mac the script first edits the copy of swift-crypto's manifest that this
+build fetched, in `.build-wasm`. That manifest gives its targets a resource
+when the machine building is a Mac, whatever it builds for, and the code
+SwiftPM generates to find the resource links all of Foundation and its ICU
+tables: 40 MiB that nothing calls. The script fails if they are in the
+module it made.
+
 Set `SWIFT` to run a particular toolchain, for example
 `SWIFT="swiftly run +6.4.1 swift"`. `Wasm/run.sh` does both of the above after
 its own checks. The tests run against the real module; `IVY_WASM` points them
