@@ -333,6 +333,9 @@ public actor Ivy {
     public var knownPeerEndpoints: [PeerEndpoint] { core.knownPeerEndpoints }
     public var peerConnectionCount: Int { core.peerConnectionCount }
     public var publicAddress: ObservedAddress? { core.publicAddress }
+    /// The session the node has with `peer` now, if any: its route says
+    /// whether the peer is reached directly or through a carrier.
+    public func session(with peer: PeerID) -> AuthenticatedPeer? { core.authenticatedPeer(for: peer) }
     /// Whether `host` is an IP literal anyone on the internet could be
     /// reached at.
     public func isGloballyRoutable(_ host: String) -> Bool { core.isGloballyRoutable(host) }
