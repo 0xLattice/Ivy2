@@ -147,16 +147,29 @@ print(sim.traceDigest)
 `IvyCore` and `IvySimulation` build for WebAssembly, and behave there exactly
 as they do natively: `Wasm/run.sh` runs the core's test suite as Wasm and
 checks that a seeded network prints the same trace digest in both builds. The
-shell does not build for Wasm, because SwiftNIO does not; a browser supplies
-its own, around `IvyCore.step`.
+shell does not build for Wasm, because SwiftNIO does not.
 
 ```sh
 IVY_CORE_ONLY=1 swift build --swift-sdk swift-6.4.0-RELEASE_wasm
 ```
 
-`IVY_CORE_ONLY=1` leaves the shell and SwiftNIO out of the package. The core
-needs only `FoundationEssentials`, which keeps the binary small; full
-Foundation would add tens of megabytes of Unicode data.
+`IVY_CORE_ONLY=1` leaves the shell and SwiftNIO out of the package, and adds
+`IvyWasm`: the core behind a small C ABI. The core needs only
+`FoundationEssentials`, which keeps the binary small; full Foundation would
+add tens of megabytes of Unicode data.
+
+[`Web/`](Web/README.md) is the shell for JavaScript, in a browser or Node: a
+TypeScript package that loads that module and drives it, with the same
+methods as the `Ivy` actor. Events and effects cross between the two as
+bytes, in the format of [docs/event-codec.md](docs/event-codec.md).
+
+```sh
+IVY_WASM_SDK=swift-6.4.0-RELEASE_wasm Web/build.sh
+cd Web && npm test
+```
+
+It takes its connections as `Transport`s. WebSocket and WebRTC transports,
+signalling and storage are not written yet; an in-memory pair is.
 
 A browser cannot open a TCP connection either. `IvyWebSocket` lets a node
 accept its peers over WebSocket, and dial other nodes the same way:
@@ -193,6 +206,8 @@ their own address and not the proxy's.
 - [Architecture](docs/architecture.md)
 - [Correctness invariants](docs/correctness-invariants.md)
 - [Moving from 15.x](docs/migration.md)
+- [Event codec](docs/event-codec.md)
+- [Ivy in JavaScript](Web/README.md)
 
 ## Requirements
 
