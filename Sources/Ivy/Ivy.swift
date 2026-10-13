@@ -333,6 +333,9 @@ public actor Ivy {
     public var knownPeerEndpoints: [PeerEndpoint] { core.knownPeerEndpoints }
     public var peerConnectionCount: Int { core.peerConnectionCount }
     public var publicAddress: ObservedAddress? { core.publicAddress }
+    /// Whether `host` is an IP literal anyone on the internet could be
+    /// reached at.
+    public func isGloballyRoutable(_ host: String) -> Bool { core.isGloballyRoutable(host) }
 
     public func connect(to endpoint: PeerEndpoint) async throws {
         try Self.unwrap(await self.await(.connect(endpoint)))

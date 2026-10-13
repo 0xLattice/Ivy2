@@ -113,6 +113,12 @@ extension IvyCore {
         return false
     }
 
+    /// Whether `host` is an IP literal anyone on the internet could be
+    /// reached at: what an address a peer names must be before it is dialled.
+    public func isGloballyRoutable(_ host: String) -> Bool {
+        !isNonRoutableDiscoveredHost(host)
+    }
+
     /// True if `host` is NOT a globally-routable IP literal: a non-IP string, or
     /// an address in any non-global / special-use range. Parses the FULL address
     /// (all four IPv4 octets / all eight IPv6 hextets) via the canonical

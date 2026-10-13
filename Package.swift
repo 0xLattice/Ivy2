@@ -98,6 +98,15 @@ if coreOnly {
                 .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
+        // A node for Punch/run.sh to put behind a NAT.
+        .executableTarget(
+            name: "IvyPunchTestNode",
+            dependencies: [
+                "Ivy",
+                "Tally",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
+        ),
         .testTarget(
             name: "IvyTests",
             dependencies: [
