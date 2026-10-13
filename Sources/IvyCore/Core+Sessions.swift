@@ -258,8 +258,10 @@ extension IvyCore {
                 rejectRecord(on: id)
                 return
             }
-            // Negotiated: cap what we send this peer at what it advertised it accepts.
-            links[id]?.peerMaxFrameSize = remoteMetadata.maxFrameSize
+            // Negotiated: cap what we send this peer at what it advertised it
+            // accepts, and at what this platform can size.
+            links[id]?.peerMaxFrameSize = min(
+                remoteMetadata.maxFrameSize, IvyConfig.largestFrameSize)
 
             let helloResponder = SessionHelloResponder(
                 routeBinding: signed.hello.routeBinding,
@@ -307,8 +309,10 @@ extension IvyCore {
                 rejectRecord(on: id)
                 return
             }
-            // Negotiated: cap what we send this peer at what it advertised it accepts.
-            links[id]?.peerMaxFrameSize = remoteMetadata.maxFrameSize
+            // Negotiated: cap what we send this peer at what it advertised it
+            // accepts, and at what this platform can size.
+            links[id]?.peerMaxFrameSize = min(
+                remoteMetadata.maxFrameSize, IvyConfig.largestFrameSize)
 
             pending.helloResponder = signed
             pending.sessionID = sessionID

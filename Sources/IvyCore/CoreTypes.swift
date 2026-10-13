@@ -289,6 +289,28 @@ public struct CoreRandom: RandomNumberGenerator, Sendable {
     }
 
     mutating func bytes32() -> Data {
-        Data((0..<32).map { _ in UInt8.random(in: .min ... .max, using: &self) })
+        Data((0..<32).map { _ in UInt8(truncatingIfNeeded: next()) })
+    }
+
+    /// A value in `0..<bound`, drawn the same way whatever the platform's
+    /// word size. The standard library's ranged draws go through `Int`,
+    /// which is 32 bits on WebAssembly, so a seeded run would differ there.
+    mutating func below(_ bound: UInt64) -> UInt64 {
+        precondition(bound > 0)
+        // Rejection sampling keeps the draw unbiased.
+        let limit = UInt64.max - UInt64.max % bound
+        var value = next()
+        while value >= limit { value = next() }
+        return value % bound
+    }
+
+    /// Fisher-Yates, on `below`.
+    mutating func shuffled<Element>(_ elements: [Element]) -> [Element] {
+        var result = elements
+        guard result.count > 1 else { return result }
+        for index in stride(from: result.count - 1, to: 0, by: -1) {
+            result.swapAt(index, Int(below(UInt64(index) + 1)))
+        }
+        return result
     }
 }

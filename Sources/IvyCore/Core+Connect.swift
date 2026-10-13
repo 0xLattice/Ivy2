@@ -610,7 +610,7 @@ extension IvyCore {
         let shift = min(attempt - 1, 10)
         let exponential = Self.reconnectBaseDelayMs * (UInt64(1) << UInt64(shift))
         let capped = min(exponential, Self.reconnectMaxDelayMs)
-        return .milliseconds(Int64(capped + UInt64.random(in: 0 ... Self.reconnectJitterMs, using: &random)))
+        return .milliseconds(Int64(capped + random.below(Self.reconnectJitterMs + 1)))
     }
 
     mutating func runScheduledReconnect(_ peer: PeerID) {

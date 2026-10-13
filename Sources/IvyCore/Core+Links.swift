@@ -68,7 +68,7 @@ struct Link: Sendable {
         self.endpoint = endpoint
         self.observedHost = observedHost
         self.localHost = localHost
-        self.budgetLimit = 2 * Int(localMaxFrameSize) + 4
+        self.budgetLimit = Int(clamping: 2 * UInt64(localMaxFrameSize) + 4)
         if case .relayed = transport { writable = false }
     }
 
@@ -275,7 +275,7 @@ extension IvyCore {
     mutating func feedRecord(_ record: Data, to id: LinkID) -> Bool {
         guard var link = links[id] else { return false }
         guard !record.isEmpty,
-              record.count <= Int(config.protocolMaxFrameSize),
+              record.count <= Int(clamping: config.protocolMaxFrameSize),
               link.queue.count < Self.maxInboundBufferedRecords,
               record.count <= config.maxInboundBufferedBytes - inboundBytesUsed,
               record.count <= link.budgetLimit - link.charged else {
@@ -402,7 +402,7 @@ extension IvyCore {
         guard let link = links[id], case .direct(let connection) = link.transport else {
             return .notConnected
         }
-        guard !payload.isEmpty, payload.count <= Int(link.peerMaxFrameSize) else {
+        guard !payload.isEmpty, payload.count <= Int(clamping: link.peerMaxFrameSize) else {
             return .locallyRejected
         }
         guard link.writable else { return .backpressured }

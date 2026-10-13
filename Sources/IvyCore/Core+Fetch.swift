@@ -321,7 +321,7 @@ extension IvyCore {
             let open = fetch.remaining.filter {
                 outstandingVolumeRequests[$0, default: 0] < config.maxOutstandingVolumeRequestsPerPeer
             }
-            guard let peer = open.shuffled(using: &random).min(by: { lhs, rhs in
+            guard let peer = random.shuffled(open).min(by: { lhs, rhs in
                 (volumeTimeoutStreaks[lhs, default: 0], outstandingVolumeRequests[lhs, default: 0])
                     < (volumeTimeoutStreaks[rhs, default: 0], outstandingVolumeRequests[rhs, default: 0])
             }) else {
