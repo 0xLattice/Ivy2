@@ -57,6 +57,8 @@ struct Link: Sendable {
 
     // Outbound.
     var unflushed = 0
+    /// Bytes written from the reserve since the link stopped being writable.
+    var reserveUsed = 0
     var writable = true
 
     init(
@@ -79,6 +81,17 @@ struct Link: Sendable {
     var isDirect: Bool {
         if case .direct = transport { return true }
         return false
+    }
+
+    /// Whether a record may be written. Past the high-water mark the link
+    /// takes no more bulk data until the shell reports it flushed, which it
+    /// does one event later even when the transport never filled. A small
+    /// record the peer is waiting on (a keepalive, "I do not have that", a
+    /// handshake or relay control record) is still written, until those
+    /// records alone amount to the mark again: it is lost only when the
+    /// transport has really stopped draining.
+    func hasRoom(reserve: Bool) -> Bool {
+        writable || (reserve && reserveUsed < IvyCore.writeHighWaterMark)
     }
 
     var route: AuthenticatedRoute {
@@ -403,19 +416,22 @@ extension IvyCore {
     // MARK: - Outbound bytes
 
     /// Writes one framed record to a direct link.
-    mutating func sendSerializedRecord(_ payload: Data, on id: LinkID) -> LinkSendResult {
+    mutating func sendSerializedRecord(
+        _ payload: Data, on id: LinkID, reserve: Bool = false
+    ) -> LinkSendResult {
         guard let link = links[id], case .direct(let connection) = link.transport else {
             return .notConnected
         }
         guard !payload.isEmpty, payload.count <= Int(clamping: link.peerMaxFrameSize) else {
             return .locallyRejected
         }
-        guard link.writable else { return .backpressured }
+        guard link.hasRoom(reserve: reserve) else { return .backpressured }
         var frame = Data(capacity: 4 + payload.count)
         frame.appendUInt32(UInt32(payload.count))
         frame.append(payload)
         let unflushed = link.unflushed + frame.count
         links[id]?.unflushed = unflushed
+        if !link.writable { links[id]?.reserveUsed += frame.count }
         if unflushed > Self.writeHighWaterMark { links[id]?.writable = false }
         emit(.write(connection, frame))
         return .sent
@@ -424,6 +440,7 @@ extension IvyCore {
     mutating func transportBecameWritable(_ connection: ConnectionID) {
         guard let id = linkByConnection[connection], let link = links[id] else { return }
         links[id]?.unflushed = 0
+        links[id]?.reserveUsed = 0
         guard !link.writable else { return }
         links[id]?.writable = true
         resumeWritabilityWaiters(id, writable: true)
