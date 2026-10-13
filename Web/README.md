@@ -13,8 +13,9 @@ core.ts -> ivy.wasm (Sources/IvyWasm, around IvyCore.step)
 ```
 
 `websocket.ts` is a `Transport` over the platform's WebSocket, and
-`storage.ts` a `ContentSource` in IndexedDB or in memory. Not here yet: a
-WebRTC transport and signalling.
+`storage.ts` a `ContentSource` in IndexedDB or in memory. `datachannel.ts` is one
+over a WebRTC data channel, and `rtc.ts` moves two pages that met through a
+node onto one.
 
 ## Build and test
 
@@ -104,6 +105,106 @@ The methods are the native `Ivy` actor's, with these differences:
   made, so nothing queues ahead of it.
 - Traffic is not recorded in a Tally ledger, which keeps its own clock; peers
   waiting for a serving slot are served in turn.
+
+## Browser to browser
+
+Two browsers cannot accept a connection from each other. They meet through a
+node both are connected to, a carrier with `relayEnabled`, and `RtcConnector`
+(`src/rtc.ts`) moves them from there to a WebRTC data channel of their own.
+
+```ts
+import { Ivy, RtcConnector } from './dist/src/index.js';
+
+const ivy = new Ivy(module, { signingKey: seed, carriers: [node] }, { dial });
+const rtc = new RtcConnector(ivy, {
+  iceServers: [{ urls: 'stun:stun.example.org' }],  // none by default
+});
+ivy.delegate = rtc.delegate(application);           // before ivy.start()
+await ivy.start();
+
+await ivy.connectViaRelay(peer);    // a session through the carrier
+// ... which the connector upgrades when it appears. With autoUpgrade off:
+const direct = await rtc.upgrade(session);   // the session peerConnected gave
+
+rtc.close();
+```
+
+`rtc.delegate(inner)` stands between Ivy and the application's delegate: it
+takes the messages on the topic `ivy.rtc/1`, which is the signalling, and
+passes everything else through. When the channel opens, the connector hands it
+to `connect` at one end and `accept` at the other, the core's handshake runs
+over it, and the direct session replaces the relayed one: the application
+hears `peerConnected` again, with a `direct` route.
+
+| Option | Default | |
+| --- | --- | --- |
+| `PeerConnection` | `RTCPeerConnection` | The constructor, for a test to replace |
+| `iceServers` | none | STUN servers. Without one, only peers that can reach each other's own addresses connect. TURN is not used: the carrier already relays |
+| `autoUpgrade` | `true` | Try whenever a relayed session to an endpoint appears |
+| `deadline` | `20000` | Milliseconds an attempt may take |
+
+`upgrade` resolves `true` when the peer's session is direct and `false` when
+it is not, and then the relayed session is as it was. Either end may call
+it, and both may at once: the peer with the smaller public key makes the
+offer, so there is one connection. An attempt already running is joined.
+
+- Signalling is taken only from the relayed session that is the peer's now,
+  and only when that peer is an endpoint. From a direct session or a carrier
+  it is dropped, and nothing malformed ends a session: at most it ends the
+  attempt.
+- One attempt per peer at a time, three for one relayed session, 20 seconds
+  each. A failed attempt closes its peer connection.
+- The relayed session is signed end to end, so the carrier cannot forge
+  signalling, only drop it. The channel is authenticated by the core's own
+  handshake over it, whoever carried the signalling.
+- Neither application hears a disconnect: each hears `peerConnected` for the
+  direct session. The other end closes the relayed session as it finishes,
+  and word of that through the carrier can overtake the handshake's last
+  record on the channel; the core holds that disconnect until it knows
+  whether the handshake completed.
+
+`DataChannelTransport` (`src/datachannel.ts`) is the `Transport` over the
+channel, and can be used by itself over any ordered, reliable
+`RTCDataChannel`, with both ends using it. A data channel cannot be paused, so
+it carries a credit window: each end sends at most 1 MiB that its peer has
+not granted back, in messages of at most 16 KiB, and a receiver holds at most
+that much unread and closes a peer that sends more. Give it the host its peer
+was observed at; the connector reads the remote address of the selected ICE
+candidate pair and, where the browser hides it, uses
+`<peer key>.webrtc.invalid`.
+
+The message formats and the reasoning are in
+[docs/architecture.md](../docs/architecture.md#browser-to-browser).
+
+`demo/rtc.html` runs all of it in one page with the browser's own
+`RTCPeerConnection`: a carrier and two peers, a relayed session, the upgrade,
+and a 20 MiB Volume over the data channel.
+
+```sh
+IVY_WASM_SDK=swift-6.4.0-RELEASE_wasm Web/build.sh
+cd Web && npm run serve
+```
+
+Open `http://localhost:8000/demo/rtc.html`. It writes `PASS`, or `FAIL` and
+the reason, at the top.
+
+`demo/peers.html` does it between two pages and a real node: one page serves
+a Volume from IndexedDB, the other meets it through the node, moves to a data
+channel between the two pages and fetches the Volume over it. The node must
+carry sessions between its peers; the test node does with `--relay`:
+
+```sh
+swift build
+.build/debug/IvyWebSocketTestNode <64 hex digits> --relay
+```
+
+It prints its public key and port. Keep its standard input open, then open
+
+```
+http://localhost:8000/demo/peers.html?node=ws://127.0.0.1:<port>/ivy&key=<publicKey>&role=serve
+```
+
+That page shows the address to open in a second tab, which writes `PASS`.
 
 ## Writing a transport
 

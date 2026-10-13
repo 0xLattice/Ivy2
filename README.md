@@ -170,7 +170,7 @@ cd Web && npm test
 
 It takes its connections as `Transport`s: a WebSocket to a node listening as
 below, or an in-memory pair. It keeps the Volumes it serves in IndexedDB,
-within a budget. A WebRTC transport and signalling are not written yet.
+within a budget.
 
 A browser cannot open a TCP connection either. `IvyWebSocket` lets a node
 accept its peers over WebSocket, and dial other nodes the same way:
@@ -191,6 +191,13 @@ frames its own records inside binary messages. There is no TLS in the
 transport, so terminate `wss` in a proxy in front of it; then pass
 `trustForwardedFor: true` to `listen`, and only then, so peers are admitted by
 their own address and not the proxy's.
+
+Two browsers cannot accept a connection from each other at all, so they meet
+through a node both are connected to, one that has `relayEnabled`. `Web/`'s
+`RtcConnector` then signals a WebRTC data channel over that relayed session
+and hands it to the core, whose handshake runs over it; the direct session
+replaces the relayed one and the node carries nothing more for the pair. See
+[Web/README.md](Web/README.md#browser-to-browser).
 
 ## Boundary
 
