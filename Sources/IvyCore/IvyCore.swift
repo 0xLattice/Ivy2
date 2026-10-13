@@ -44,6 +44,9 @@ public struct IvyCore: Sendable {
     /// record that produced them has been fully handled.
     var authResults: [(op: OpID, authenticated: Bool)] = []
     var responderResults: [(op: OpID, connected: Bool)] = []
+    /// Peers whose session ended while a verified handshake from them was
+    /// still arriving: the disconnect waits to see whether that takes over.
+    var heldDisconnects: Set<PeerKey> = []
     /// Connect operations waiting on another attempt to reach the same
     /// peer, and the peers whose attempts may just have ended.
     var connectFollowers: [PeerKey: [OpID]] = [:]
@@ -316,6 +319,7 @@ public struct IvyCore: Sendable {
         reconnectScheduled.removeAll()
         connectFollowers.removeAll()
         followerChecks.removeAll()
+        heldDisconnects.removeAll()
         reconnectAttempts.removeAll()
         // A dial in flight keeps its entry so its connection, when the shell
         // reports it, is recognised and closed.

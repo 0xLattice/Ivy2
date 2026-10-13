@@ -403,8 +403,9 @@ final class RelayTeardownTests: XCTestCase {
     }
 
     func testADirectSessionReplacingARelayedOneClosesItsRoute() {
-        var replaced = 0
-        var kept = 0
+        // The direct session is kept whichever has the smaller ID.
+        var directSmaller = 0
+        var relayedSmaller = 0
         for seed: UInt64 in 1...8 {
             let sim = Simulation(seed: seed)
             let carrierIdentity = sim.relayIdentity(1)
@@ -422,8 +423,8 @@ final class RelayTeardownTests: XCTestCase {
             // The same peer then reaches the node directly.
             let direct = RawRelayPeer(sim, to: node, as: remote)
             guard let directID = direct.session?.id else { return XCTFail("no direct session") }
-            let directWins = directID < relayed.id
-            if directWins { replaced += 1 } else { kept += 1 }
+            if directID < relayed.id { directSmaller += 1 } else { relayedSmaller += 1 }
+            let directWins = true
 
             XCTAssertEqual(node.core.sessions[remote.key]?.sessionID, directWins ? directID : relayed.id)
             XCTAssertEqual(
@@ -441,8 +442,8 @@ final class RelayTeardownTests: XCTestCase {
             XCTAssertEqual(node.ledger.violations(of: remote.peer), 0)
             XCTAssertTrue(carrier.isConnected)
         }
-        XCTAssertGreaterThan(replaced, 0, "no seed exercised a replacement")
-        XCTAssertGreaterThan(kept, 0, "no seed exercised a kept session")
+        XCTAssertGreaterThan(directSmaller, 0, "no seed gave the direct session the smaller ID")
+        XCTAssertGreaterThan(relayedSmaller, 0, "no seed gave the relayed session the smaller ID")
     }
 
     func testCleanupPreservesOnlyTheRouteOfTheLinkNamed() {
