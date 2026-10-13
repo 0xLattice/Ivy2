@@ -231,14 +231,21 @@ extension IvyCore {
             op.phase = .idle
             connectOps[id] = op
 
-            let hasSession = sessions[op.key]?.role == op.role && hasLiveSession(op.key)
+            var hasSession = sessions[op.key]?.role == op.role && hasLiveSession(op.key)
+            // A connection the caller supplies replaces a relayed session:
+            // the handshake runs beside it, and the direct session it makes
+            // is the one kept.
+            let replacesRelayed = hasSession && op.supplied != nil
+                && sessions[op.key].flatMap { links[$0.link]?.isDirect } == false
+            if replacesRelayed { hasSession = false }
             if reconnectSuppressed.contains(peer) {
                 if op.role == .carrier { continue }
                 return finishConnect(id, .notAdmitted)
             }
             if hasSession { return finishConnect(id, .connected) }
             guard let dial = reserveOutgoingDial(
-                to: route, key: op.key, op: id, dialling: op.supplied == nil) else {
+                to: route, key: op.key, op: id, dialling: op.supplied == nil,
+                besideSession: replacesRelayed) else {
                 if op.role == .carrier { continue }
                 // A fetch waits for an attempt already under way: two
                 // fetches that need the same provider must not have the
@@ -272,10 +279,11 @@ extension IvyCore {
         to endpoint: PeerEndpoint,
         key: PeerKey,
         op: OpID?,
-        dialling: Bool = true
+        dialling: Bool = true,
+        besideSession: Bool = false
     ) -> DialID? {
         let peer = key.peerID
-        guard sessions[key] == nil,
+        guard sessions[key] == nil || besideSession,
               outgoingDials[peer] == nil,
               responderWaiters[key] == nil,
               connectionCapacityUsed < config.maxConnections,
