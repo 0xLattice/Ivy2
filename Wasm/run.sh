@@ -17,15 +17,17 @@ cd "$(dirname "$0")/.."
 SWIFT=${SWIFT:-swift}
 SDK=${IVY_WASM_SDK:?set IVY_WASM_SDK to a Wasm SDK id from 'swift sdk list'}
 
-# The toolchain's build tool sometimes dies of a signal while planning, with
-# nothing of this package running. That is tried again; an ordinary failure,
-# such as a compile error, is not.
+# Two programs here sometimes die of a signal with nothing of this package at
+# fault: the toolchain's build tool while planning, and Node while it runs
+# the probe, which a WebAssembly module cannot do to it (a trap is an
+# exception). Those are tried again; an ordinary failure, such as a compile
+# error or a wrong answer, is not.
 build() {
     for attempt in 1 2 3; do
         status=0
         "$@" || status=$?
         [ "$status" -lt 128 ] && return "$status"
-        echo "the build tool crashed (status $status), attempt $attempt"
+        echo "$1 crashed (status $status), attempt $attempt" >&2
     done
     return "$status"
 }
@@ -44,7 +46,9 @@ echo "== probe, WebAssembly"
 build env IVY_CORE_ONLY=1 $SWIFT build -c release --swift-sdk "$SDK" --package-path Wasm/probe --scratch-path Wasm/probe/.build-wasm
 wasm=$(find Wasm/probe/.build-wasm -type f -name probe.wasm | head -1)
 echo "-- running $wasm under $(node --version)"
-node --no-warnings Wasm/run-wasi.mjs "$wasm" > Wasm/probe/.build/wasm.out
+# Each attempt starts its output afresh.
+probe_under_node() { node --no-warnings Wasm/run-wasi.mjs "$wasm" > Wasm/probe/.build/wasm.out; }
+build probe_under_node
 cat Wasm/probe/.build/wasm.out
 
 if ! cmp -s Wasm/probe/.build/native.out Wasm/probe/.build/wasm.out; then
