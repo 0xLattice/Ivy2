@@ -241,6 +241,8 @@ replaces the relayed one and the node carries nothing more for the pair. See
 
 ## Documentation
 
+Published at [lattice.build/docs](https://lattice.build/docs/protocol/ivy/) from the files below.
+
 - [Architecture](docs/architecture.md)
 - [Correctness invariants](docs/correctness-invariants.md)
 - [Moving from 15.x](docs/migration.md)
