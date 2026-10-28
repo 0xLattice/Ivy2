@@ -86,9 +86,10 @@ struct VolumeFetch: Sendable {
     var remaining: [PeerID] = []
     var last = AttributedVolumeBundleResponse.empty
     var lastSingle = AttributedVolumeResponse.empty
-    /// Peers the caller expects to hold the Volume: among the connected
-    /// peers they are listed first, and among candidates asked before the
-    /// others that are not timing out.
+    /// Peers the caller expects to hold the Volume: among candidates they are
+    /// asked before the others that are not timing out, and those not timing
+    /// out are listed first among the connected peers (after known
+    /// providers), in at most half of that step's batch.
     var preferred = Set<PeerID>()
 
     var isBundle: Bool {
@@ -308,11 +309,22 @@ extension IvyCore {
         case 0:
             peers = connectedProviderIDs(for: fetch.rootCID)
         case 1:
+            // A preferred peer that has been timing out is listed only as any
+            // other connected peer is, and the preferred take at most half
+            // the batch: preference never keeps the rotation from the rest.
             let connected = Set(connectedEndpointPeers)
             let preferred = fetch.preferred
-                .filter { connected.contains($0) && !isDeficiencySuppressed(rootCID: fetch.rootCID, peer: $0) }
+                .filter {
+                    connected.contains($0) && volumeTimeoutStreaks[$0, default: 0] == 0
+                        && !fetch.asked.contains($0)
+                        && !isDeficiencySuppressed(rootCID: fetch.rootCID, peer: $0)
+                }
                 .sorted { $0.publicKey < $1.publicKey }
-            peers = preferred + connectedFallbackCandidates(rootCID: fetch.rootCID)
+                .prefix((config.maxContentCandidates + 1) / 2)
+            peers = preferred + connectedFallbackCandidates(
+                rootCID: fetch.rootCID,
+                limit: config.maxContentCandidates - preferred.count,
+                excluding: Set(preferred))
         default:
             peers = connectedProviderIDs(for: fetch.rootCID, including: fetch.fresh)
         }
@@ -793,17 +805,20 @@ extension IvyCore {
     }
 
     /// Connected peers in key order, rotated so successive fetches start
-    /// with different ones.
-    mutating func connectedFallbackCandidates(rootCID: String) -> [PeerID] {
+    /// with different ones: at most `limit` (`maxContentCandidates`), none in
+    /// `excluding`, the rotation moving past exactly those returned.
+    mutating func connectedFallbackCandidates(
+        rootCID: String, limit: Int? = nil, excluding: Set<PeerID> = []
+    ) -> [PeerID] {
         var eligible: [PeerID] = []
         for peer in connectedEndpointPeers.sorted(by: { $0.publicKey < $1.publicKey })
-            where !isDeficiencySuppressed(rootCID: rootCID, peer: peer) {
+            where !excluding.contains(peer) && !isDeficiencySuppressed(rootCID: rootCID, peer: peer) {
             eligible.append(peer)
         }
         guard !eligible.isEmpty else { return [] }
         let start = nextConnectedFallbackOffset % eligible.count
         let rotated = Array(eligible[start...] + eligible[..<start])
-        let selected = Array(rotated.prefix(config.maxContentCandidates))
+        let selected = Array(rotated.prefix(max(limit ?? config.maxContentCandidates, 0)))
         nextConnectedFallbackOffset = (start + selected.count) % eligible.count
         return selected
     }

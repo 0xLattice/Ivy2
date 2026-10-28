@@ -102,6 +102,55 @@ final class ClientVolumeSchedulingTests: XCTestCase {
         }
     }
 
+    /// Silent preferred peers can't crowd a holder out of the connected
+    /// peers: once they have timed out they are listed only as any peer is,
+    /// so the rotation reaches the holder as it does with no preference.
+    func testSilentPreferredPeersDoNotCrowdOutAHolder() {
+        for seed in UInt64(1)...4 {
+            let sim = Simulation(seed: seed)
+            let client = sim.fetchNode(requestTimeout: .seconds(1), maxContentCandidates: 2)
+            let servers = (0..<3).map { _ -> Simulation.Node in
+                let server = sim.node(requestTimeout: .seconds(10))
+                sim.connect(client, server)
+                return server
+            }.sorted { $0.peer.publicKey < $1.peer.publicKey }
+            let (silent, holder) = (Array(servers.prefix(2)), servers[2])
+            for server in silent { server.stallsStorage = true }
+            // The first fetch asks both silent peers, as it would with no
+            // preference; from then on the rotation of three over batches of
+            // two reaches the holder two fetches in three.
+            var found = 0
+            for index in 0..<10 {
+                let root = "r\(index)"
+                for server in servers { server.volumes[root] = volume(root) }
+                let response = sim.await(fetch(root, preferring: silent.map(\.peer)), on: client)?.volume
+                if index > 0, response?.servedBy == holder.peer { found += 1 }
+            }
+            XCTAssertGreaterThanOrEqual(found, 6, "seed \(seed)")
+        }
+    }
+
+    /// Among the connected peers the preferred are listed first, in at most
+    /// half the batch, the rest coming from the rotation. Ten peers, none
+    /// holding the Volume, so the whole batch of eight is asked.
+    func testPreferredPeersTakeAtMostHalfOfTheConnectedBatch() {
+        func asked(preferringHighest count: Int) -> (asked: Set<PeerID>, byKey: [PeerID]) {
+            let (sim, client, servers) = fixture(servers: Array(repeating: [], count: 10))
+            let byKey = servers.map(\.peer).sorted { $0.publicKey < $1.publicKey }
+            _ = sim.await(fetch("root", preferring: Array(byKey.suffix(count))), on: client)
+            return (Set(servers.filter { !$0.startedJobs.isEmpty }.map(\.peer)), byKey)
+        }
+        // The two highest keys, which the rotation alone would leave out.
+        let two = asked(preferringHighest: 2)
+        XCTAssertEqual(two.asked.count, 8)
+        XCTAssertTrue(two.asked.isSuperset(of: two.byKey.suffix(2)))
+        // Six preferred: four are listed, and the rotation still brings the
+        // four lowest keys.
+        let six = asked(preferringHighest: 6)
+        XCTAssertEqual(six.asked.count, 8)
+        XCTAssertTrue(six.asked.isSuperset(of: six.byKey.prefix(4)))
+    }
+
     /// A miss moves on to the next peer.
     func testMissRotatesToNextPeer() {
         var missedFirst = 0

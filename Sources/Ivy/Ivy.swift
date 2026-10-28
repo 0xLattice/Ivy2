@@ -481,11 +481,14 @@ public actor Ivy {
     }
 
     /// `fetchVolume(rootCID:)`, favouring `preferred`, the peers the caller
-    /// expects to hold it (a chain's current peers): among the connected
-    /// peers they are asked first, and among any candidates before the
-    /// others, except one that has been timing out, which is still asked
-    /// after the peers that have not. A hint for whom to ask, never for
-    /// what to accept; with none preferred it is `fetchVolume(rootCID:)`.
+    /// expects to hold it (a chain's current peers). Known providers are
+    /// still asked first; then the preferred among the connected peers, in
+    /// at most half of that step's candidates, and among any candidates
+    /// the preferred go before the others. A preferred peer that has been
+    /// timing out gets none of this and is asked after the peers that have
+    /// not, so one that claims to hold content and never answers costs no
+    /// more than any silent peer. A hint for whom to ask, never for what to
+    /// accept; with none preferred it is `fetchVolume(rootCID:)`.
     public func fetchVolume(
         rootCID: String,
         preferring preferred: [PeerID]
