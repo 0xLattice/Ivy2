@@ -484,10 +484,11 @@ public actor Ivy {
     /// expects to hold it (a chain's current peers). Known providers are
     /// still asked first; then the preferred among the connected peers, in
     /// at most half of that step's candidates, and among any candidates
-    /// the preferred go before the others. A preferred peer that has been
-    /// timing out gets none of this and is asked after the peers that have
-    /// not, so one that claims to hold content and never answers costs no
-    /// more than any silent peer. A hint for whom to ask, never for what to
+    /// the preferred go before the others. A preferred peer whose last
+    /// answer to this node was not a Volume (a miss, a timeout, one that
+    /// did not verify) gets none of this until it serves one, so one that
+    /// claims to hold content and answers slowly or not at all costs no
+    /// more than any such peer. A hint for whom to ask, never for what to
     /// accept; with none preferred it is `fetchVolume(rootCID:)`.
     public func fetchVolume(
         rootCID: String,

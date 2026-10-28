@@ -111,6 +111,10 @@ public struct IvyCore: Sendable {
     /// Consecutive Volume requests each connected peer let time out; cleared
     /// when it serves one, dropped when it disconnects.
     var volumeTimeoutStreaks: [PeerID: Int] = [:]
+    /// Connected peers whose last answer to a Volume request from this node
+    /// was not the Volume (a miss, a timeout, one that did not verify):
+    /// favoured by no fetch's `preferred` until they serve one.
+    var volumeMissedPeers = Set<PeerID>()
     /// Volume fetches waiting for a peer below its in-flight limit, oldest first.
     var outstandingVolumeSlotWaiters: [OpID] = []
     var nextConnectedFallbackOffset = 0

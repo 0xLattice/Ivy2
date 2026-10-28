@@ -102,6 +102,35 @@ final class ClientVolumeSchedulingTests: XCTestCase {
         }
     }
 
+    /// A claim to hold content earns no preference that a miss keeps: a
+    /// preferred peer whose last answer was a miss is asked after the
+    /// preferred that have not missed, and is favoured again once it serves.
+    func testAPreferredPeerThatMissedIsFavouredOnlyOnceItServesAgain() {
+        for seed in UInt64(1)...8 {
+            let (sim, client, servers) = fixture(seed: seed, servers: [["c", "d"], ["b", "d", "x"]])
+            let (claimant, holder) = (servers[0], servers[1])
+
+            // Preferred, it is asked first for a Volume it lacks, and misses.
+            let x = sim.await(fetch("x", preferring: [claimant.peer]), on: client)?.volume
+            XCTAssertEqual(x?.servedBy, holder.peer, "seed \(seed)")
+            XCTAssertTrue(client.core.volumeMissedPeers.contains(claimant.peer), "seed \(seed)")
+            XCTAssertFalse(client.core.volumeMissedPeers.contains(holder.peer), "seed \(seed)")
+
+            // Both preferred: the one that has not missed is asked, and only it.
+            let asked = claimant.startedJobs.count
+            let b = sim.await(fetch("b", preferring: [claimant.peer, holder.peer]), on: client)?.volume
+            XCTAssertEqual(b?.servedBy, holder.peer, "seed \(seed)")
+            XCTAssertEqual(claimant.startedJobs.count, asked, "seed \(seed)")
+
+            // It serves a Volume, and is favoured again.
+            let c = sim.await(fetch("c", preferring: [claimant.peer]), on: client)?.volume
+            XCTAssertEqual(c?.servedBy, claimant.peer, "seed \(seed)")
+            XCTAssertFalse(client.core.volumeMissedPeers.contains(claimant.peer), "seed \(seed)")
+            let d = sim.await(fetch("d", preferring: [claimant.peer]), on: client)?.volume
+            XCTAssertEqual(d?.servedBy, claimant.peer, "seed \(seed)")
+        }
+    }
+
     /// Silent preferred peers can't crowd a holder out of the connected
     /// peers: once they have timed out they are listed only as any peer is,
     /// so the rotation reaches the holder as it does with no preference.

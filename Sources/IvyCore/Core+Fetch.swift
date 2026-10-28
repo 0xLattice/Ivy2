@@ -86,10 +86,10 @@ struct VolumeFetch: Sendable {
     var remaining: [PeerID] = []
     var last = AttributedVolumeBundleResponse.empty
     var lastSingle = AttributedVolumeResponse.empty
-    /// Peers the caller expects to hold the Volume: among candidates they are
-    /// asked before the others that are not timing out, and those not timing
-    /// out are listed first among the connected peers (after known
-    /// providers), in at most half of that step's batch.
+    /// Peers the caller expects to hold the Volume. One whose last answer was
+    /// a Volume (`IvyCore.favours`) is asked before the other candidates that
+    /// are not timing out, and listed first among the connected peers (after
+    /// known providers), in at most half of that step's batch.
     var preferred = Set<PeerID>()
 
     var isBundle: Bool {
@@ -106,7 +106,17 @@ extension IvyCore {
     mutating func handleContentUnavailable(requestID: UInt64, from peer: PeerID, sessionID: Data?) {
         guard let pending = pendingVolumeRequests[requestID],
               pending.matches(peer: peer, sessionID: sessionID) else { return }
+        volumeMissedPeers.insert(peer)
         markVolumeCandidateDone(requestID: requestID, peer: peer)
+    }
+
+    /// Whether `fetch` favours `peer`: preferred, and its last answer to a
+    /// Volume request was not a miss, a timeout or a Volume that did not
+    /// verify. A claim to hold content earns no preference that answering
+    /// slowly, or not at all, keeps.
+    func favours(_ fetch: VolumeFetch, _ peer: PeerID) -> Bool {
+        fetch.preferred.contains(peer) && !volumeMissedPeers.contains(peer)
+            && volumeTimeoutStreaks[peer, default: 0] == 0
     }
 
     // MARK: - Volumes: the fetch
@@ -309,18 +319,17 @@ extension IvyCore {
         case 0:
             peers = connectedProviderIDs(for: fetch.rootCID)
         case 1:
-            // A preferred peer that has been timing out is listed only as any
+            // A preferred peer that missed or timed out is listed only as any
             // other connected peer is, and the preferred take at most half
             // the batch: preference never keeps the rotation from the rest.
             let connected = Set(connectedEndpointPeers)
             let preferred = fetch.preferred
                 .filter {
-                    connected.contains($0) && volumeTimeoutStreaks[$0, default: 0] == 0
-                        && !fetch.asked.contains($0)
+                    connected.contains($0) && favours(fetch, $0) && !fetch.asked.contains($0)
                         && !isDeficiencySuppressed(rootCID: fetch.rootCID, peer: $0)
                 }
                 .sorted { $0.publicKey < $1.publicKey }
-                .prefix((config.maxContentCandidates + 1) / 2)
+                .prefix(config.maxContentCandidates / 2)
             peers = preferred + connectedFallbackCandidates(
                 rootCID: fetch.rootCID,
                 limit: config.maxContentCandidates - preferred.count,
@@ -355,16 +364,16 @@ extension IvyCore {
             guard !fetch.remaining.isEmpty else { return volumeCandidatesExhausted(id) }
             guard isRunning else { return finishVolumeFetch(id, .empty) }
 
-            // Peers that have been timing out last, then the preferred, then
-            // the least loaded, ties at random so no peer is always asked
-            // first.
+            // Peers that have been timing out last, then the favoured
+            // preferred, then the least loaded, ties at random so no peer is
+            // always asked first.
             let open = fetch.remaining.filter {
                 outstandingVolumeRequests[$0, default: 0] < config.maxOutstandingVolumeRequestsPerPeer
             }
             func rank(_ peer: PeerID) -> (Int, Int, Int) {
                 (
                     volumeTimeoutStreaks[peer, default: 0],
-                    fetch.preferred.contains(peer) ? 0 : 1,
+                    favours(fetch, peer) ? 0 : 1,
                     outstandingVolumeRequests[peer, default: 0]
                 )
             }
@@ -731,6 +740,7 @@ extension IvyCore {
 
     private mutating func rejectVolumeCandidate(requestID: UInt64, peer: PeerID) {
         ledger.recordProtocolViolation(peer: peer)
+        volumeMissedPeers.insert(peer)
         markVolumeCandidateDone(requestID: requestID, peer: peer)
     }
 
@@ -748,6 +758,7 @@ extension IvyCore {
         if let pending = pendingVolumeRequests[requestID], pending.volumes.isEmpty {
             for peer in pending.candidateSessions.keys {
                 volumeTimeoutStreaks[peer, default: 0] += 1
+                volumeMissedPeers.insert(peer)
             }
         }
         resolveVolumeRequest(requestID: requestID)
@@ -756,7 +767,10 @@ extension IvyCore {
     mutating func resolveVolumeRequest(requestID: UInt64) {
         guard let pending = pendingVolumeRequests.removeValue(forKey: requestID) else { return }
         timers.cancel(.volumeRequest(requestID))
-        if let servedBy = pending.volumes.first?.servedBy { volumeTimeoutStreaks[servedBy] = nil }
+        if let servedBy = pending.volumes.first?.servedBy {
+            volumeTimeoutStreaks[servedBy] = nil
+            volumeMissedPeers.remove(servedBy)
+        }
         for assembly in pending.assemblies.values { releaseVolumeAssembly(assembly) }
         precondition(pending.receivedBytes <= inFlightVolumeBytes)
         precondition(pending.receivedBytes <= reservedVolumeBytes)

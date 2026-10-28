@@ -135,6 +135,7 @@ extension IvyCore {
     /// Ends everything in flight that depended on `peer`'s endpoint session.
     mutating func cleanupPendingForPeer(_ peer: PeerID) {
         volumeTimeoutStreaks[peer] = nil
+        volumeMissedPeers.remove(peer)
         for request in serving.keys.filter({ $0.peer == peer }).sorted(by: Self.servingOrder) {
             cancelServing(request)
         }
