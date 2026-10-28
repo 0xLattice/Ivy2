@@ -172,8 +172,8 @@ public struct IvyCore: Sendable {
         self.ledger = ledger
         self.random = random
         self.providerSheddingSecret = Router.hash(
-            "ivy.provider-shedding.v1:" + config.signingKey.rawRepresentation.map { String(format: "%02x", $0) }.joined()
-        ).map { String(format: "%02x", $0) }.joined()
+            "ivy.provider-shedding.v1:" + config.signingKey.rawRepresentation.map(hexByte).joined()
+        ).map(hexByte).joined()
         self.router = Router(localID: PeerID(publicKey: config.publicKey), k: config.kBucketSize)
     }
 

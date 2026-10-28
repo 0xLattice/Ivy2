@@ -263,51 +263,42 @@ final class ProviderRefreshTests: XCTestCase {
         XCTAssertEqual(Set(records.map(\.endpoint.publicKey)).count, 100)
     }
 
+    private func keptProviders(_ node: Simulation.Node, _ sim: Simulation, announcing announces: [Int]) -> Set<String> {
+        for identity in announces {
+            let peer = PeerID(publicKey: String(format: "kept-provider-%03d", identity))
+            // One shared /16, as hosts behind one proxy appear.
+            node.core.storeProviderHint(
+                rootCID: "root", peer: peer,
+                endpoint: PeerEndpoint(publicKey: peer.publicKey, host: "66.241.\(identity).1", port: 4000),
+                expiresAt: sim.unixSeconds + 600)
+        }
+        return Set(node.core.providerHints["root"]?.map(\.peer.publicKey) ?? [])
+    }
+
     /// A full root keeps the same providers whatever order or how often they
     /// announce: announcing more often buys no place.
     func testAFullRootsProvidersDoNotDependOnWhoAnnouncesMostOften() {
+        // The same node each time: a fresh simulation's first node.
         func kept(_ announces: [Int]) -> Set<String> {
             let sim = Simulation()
-            let node = sim.node()
-            for identity in announces {
-                let peer = PeerID(publicKey: String(format: "often-provider-%03d", identity))
-                node.core.storeProviderHint(
-                    rootCID: "root", peer: peer,
-                    endpoint: PeerEndpoint(publicKey: peer.publicKey, host: "8.\(identity).0.1", port: 4000),
-                    expiresAt: sim.unixSeconds + 600)
-            }
-            return Set(node.core.providerHints["root"]?.map(\.peer.publicKey) ?? [])
+            return keptProviders(sim.node(), sim, announcing: announces)
         }
         let once = kept(Array(0..<60))
         // Ten of them re-announce after everyone, again and again.
         let often = kept(Array(0..<60) + Array(repeating: Array(40..<50), count: 5).flatMap { $0 })
         let reversed = kept(Array((0..<60).reversed()))
-        XCTAssertEqual(once.count, IvyConfig(signingKey: .init()).kBucketSize)
+        XCTAssertEqual(once.count, 20)
         XCTAssertEqual(often, once)
         XCTAssertEqual(reversed, once)
     }
 
-    /// Providers flooding a full root from one netgroup shed each other, not
-    /// the providers spread across others.
-    func testAFloodFromOneNetgroupShedsItsOwn() {
+    /// Nodes holding the same full root keep different providers of it, so
+    /// no provider is named by every one of them.
+    func testNodesHoldingAFullRootKeepDifferentProviders() {
         let sim = Simulation()
-        let node = sim.node()
-        let spread = (0..<10).map { PeerID(publicKey: String(format: "spread-provider-%03d", $0)) }
-        for (index, peer) in spread.enumerated() {
-            node.core.storeProviderHint(
-                rootCID: "root", peer: peer,
-                endpoint: PeerEndpoint(publicKey: peer.publicKey, host: "8.\(index).0.1", port: 4000),
-                expiresAt: sim.unixSeconds + 600)
-        }
-        for index in 0..<200 {
-            let peer = PeerID(publicKey: String(format: "flood-provider-%03d", index))
-            node.core.storeProviderHint(
-                rootCID: "root", peer: peer,
-                endpoint: PeerEndpoint(publicKey: peer.publicKey, host: "9.9.\(index).1", port: 4000),
-                expiresAt: sim.unixSeconds + 600)
-        }
-        let kept = Set(node.core.providerHints["root"]?.map(\.peer) ?? [])
-        XCTAssertTrue(kept.isSuperset(of: spread))
+        let kept = (0..<4).map { _ in keptProviders(sim.node(), sim, announcing: Array(0..<60)) }
+        XCTAssertEqual(Set(kept).count, kept.count)
+        XCTAssertGreaterThan(kept.reduce(Set()) { $0.union($1) }.count, 20)
     }
 
     /// "provider identities each receive bounded route failover"

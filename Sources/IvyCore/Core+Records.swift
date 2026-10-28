@@ -388,12 +388,13 @@ extension IvyCore {
     }
 
     /// At most `kBucketSize` providers of `rootCID`, each with at most
-    /// `maxRoutesPerIdentity` routes. A full root sheds a referred-only
-    /// provider before any that announced itself; among those, one from the
-    /// netgroup holding the most, and within it the one ranked lowest by
-    /// this node's secret. Neither announcing more often nor grinding keys
-    /// buys a place: the kept set is decided by who is listed, not by when or
-    /// under what key, and a flood from one netgroup sheds its own first.
+    /// `maxRoutesPerIdentity` routes. A full root keeps the providers that
+    /// announced themselves before those only referred, and among each the
+    /// ones this node's secret ranks first: who is kept depends on who is
+    /// listed, not on when, how often or from what address they announced,
+    /// and differs from node to node, so no provider is named by every node
+    /// holding the root. A kept provider that goes away keeps its place until
+    /// its record expires.
     private func boundedProviderHints(_ input: [ProviderHint], rootCID: String) -> [ProviderHint] {
         var peerOrder: [PeerID] = []
         var routesByPeer: [PeerID: [ProviderHint]] = [:]
@@ -405,17 +406,14 @@ extension IvyCore {
             routes.append(hint)
             routesByPeer[hint.peer] = Array(routes.suffix(config.maxRoutesPerIdentity))
         }
-        while peerOrder.count > config.kBucketSize {
-            let referredOnly = peerOrder.filter { peer in
-                routesByPeer[peer]?.contains { $0.source == peer } != true
-            }
-            let candidates = referredOnly.isEmpty ? peerOrder : referredOnly
-            let byGroup = Dictionary(grouping: candidates) { peer in
-                routesByPeer[peer]?.last?.endpoint.map { NetGroup.group($0.host) } ?? ""
-            }
-            let largest = byGroup.sorted { $0.key < $1.key }.max { $0.value.count < $1.value.count }!.value
-            let shed = largest.min { sheddingRank($0, rootCID).lexicographicallyPrecedes(sheddingRank($1, rootCID)) }!
-            peerOrder.removeAll { $0 == shed }
+        if peerOrder.count > config.kBucketSize {
+            let kept = Set(peerOrder.map { peer in
+                (peer: peer, announced: routesByPeer[peer]?.contains { $0.source == peer } == true,
+                 rank: sheddingRank(peer, rootCID))
+            }.sorted {
+                $0.announced != $1.announced ? $0.announced : $0.rank.lexicographicallyPrecedes($1.rank)
+            }.prefix(config.kBucketSize).map(\.peer))
+            peerOrder.removeAll { !kept.contains($0) }
         }
         return peerOrder.flatMap { routesByPeer[$0] ?? [] }
     }
