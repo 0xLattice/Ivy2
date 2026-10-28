@@ -261,6 +261,37 @@ final class ProviderRefreshTests: XCTestCase {
         XCTAssertEqual(Set(records.map(\.endpoint.publicKey)).count, 100)
     }
 
+    /// A key with more providers than one answer holds is answered with a
+    /// fresh sample each time: the identities that sort first are not in
+    /// every answer, and across answers every provider is named.
+    func testProviderAnswersAreAFreshSampleOfAKeysProviders() {
+        let sim = Simulation()
+        let node = sim.node()
+        let expiry = sim.unixSeconds + 60
+        let count = Int(MessageLimits.maxNeighborCount) * 4
+        let hints = (0..<count).map { identity -> ProviderHint in
+            let peer = PeerID(publicKey: String(format: "sample-provider-%04d", identity))
+            return ProviderHint(
+                peer: peer,
+                endpoint: PeerEndpoint(
+                    publicKey: peer.publicKey, host: "8.\(identity / 256).\(identity % 256).1", port: 4000),
+                expiresAt: expiry,
+                source: peer)
+        }
+        let lowest = Set(hints.map(\.peer.publicKey).sorted().prefix(Int(MessageLimits.maxNeighborCount)))
+        var named = Set<String>()
+        var answers: [Set<String>] = []
+        for _ in 0..<32 {
+            let answer = Set(node.core.providerRecordsForWire(hints).map(\.endpoint.publicKey))
+            XCTAssertEqual(answer.count, Int(MessageLimits.maxNeighborCount))
+            answers.append(answer)
+            named.formUnion(answer)
+        }
+        XCTAssertFalse(answers.contains(lowest))
+        XCTAssertEqual(Set(answers).count, answers.count)
+        XCTAssertEqual(named.count, count)
+    }
+
     /// "provider identities each receive bounded route failover"
     func testProviderRoutesFailOverPerIdentity() {
         let sim = Simulation()

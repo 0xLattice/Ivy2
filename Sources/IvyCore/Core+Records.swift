@@ -170,7 +170,12 @@ extension IvyCore {
             .providers(rootCID: rootCID, requestID: requestID, records: records))
     }
 
-    func providerRecordsForWire(_ hints: [ProviderHint]) -> [ProviderRecord] {
+    /// At most `maxNeighborCount` records, every identity's first route
+    /// before any identity's second, the identities in a fresh random order:
+    /// a key with more providers than one answer holds names a different
+    /// sample to each asker, so none is named to every asker, and a key
+    /// cannot be held by grinding identities that sort first.
+    mutating func providerRecordsForWire(_ hints: [ProviderHint]) -> [ProviderRecord] {
         let records = hints.compactMap { hint -> ProviderRecord? in
             guard let endpoint = hint.endpoint else { return nil }
             return ProviderRecord(endpoint: endpoint, expiresAt: hint.expiresAt)
@@ -180,8 +185,9 @@ extension IvyCore {
         }
         let byIdentity = Dictionary(grouping: records, by: \.endpoint.publicKey)
         var selected: [ProviderRecord] = []
+        let identities = random.shuffled(byIdentity.keys.sorted())
         for index in 0..<config.maxRoutesPerIdentity {
-            for identity in byIdentity.keys.sorted()
+            for identity in identities
                 where selected.count < Int(MessageLimits.maxNeighborCount) {
                 let routes = byIdentity[identity] ?? []
                 if routes.indices.contains(index) { selected.append(routes[index]) }
