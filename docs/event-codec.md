@@ -34,7 +34,7 @@ re-encoded, so megabytes pass through as they are.
 
 Every encoding starts with one version byte, currently `2`, and holds exactly
 one value: bytes after its end are an error. A change to anything below is a
-new version.
+new version, except a new tag: an encoding that never used it is unchanged.
 
 Decoding takes untrusted bytes and refuses, without trapping:
 

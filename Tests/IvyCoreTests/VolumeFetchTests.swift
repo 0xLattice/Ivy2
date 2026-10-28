@@ -228,7 +228,6 @@ final class VolumeFetchTests: XCTestCase {
 
     // MARK: - Exact sessions
 
-    /// An advertised Volume is fenced to the exact authenticated session.
     private func fromSessions(_ peers: [FetchRawPeer], root: String = "root") -> Request {
         .fetchVolumeFromSessions(
             peers.map(\.authenticated),
@@ -296,6 +295,7 @@ final class VolumeFetchTests: XCTestCase {
         XCTAssertEqual(node.core.freshProviderQueryCount, 0)
     }
 
+    /// An advertised Volume is fenced to the exact authenticated session.
     func testExactVolumeSessionIsFenced() {
         let (sim, node, peer) = requester()
         let oldPeer = peer.authenticated

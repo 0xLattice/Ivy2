@@ -482,8 +482,9 @@ public actor Ivy {
 
     /// Fetches one complete Volume from the exact authenticated endpoint
     /// sessions named: only those are asked, one at a time (those timing out
-    /// last, then the least loaded), until one sends it. Empty when none
-    /// does, or none is named.
+    /// last, then the least loaded), until one sends it. Without entries
+    /// when none does or none is named, keeping a `failure` (the caller's
+    /// boundary, this node's capacity) if one ended an attempt.
     public func fetchVolume(
         rootCID: String,
         from peers: [AuthenticatedPeer]
