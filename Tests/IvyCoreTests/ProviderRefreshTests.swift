@@ -57,7 +57,9 @@ final class ProviderRefreshTests: XCTestCase {
         let result = sim.result(of: search, on: node)?.endpoints ?? []
         XCTAssertTrue(result.contains(honestProvider))
         XCTAssertTrue(result.prefix(4).contains(honestProvider))
-        XCTAssertEqual(result.filter { $0.publicKey == honestProvider.publicKey }.count, 3)
+        // The flood's routes for the honest identity share the flood's
+        // netgroup and are shed with it; the honest route is what is kept.
+        XCTAssertEqual(result.filter { $0.publicKey == honestProvider.publicKey }.first, honestProvider)
         XCTAssertTrue(node.core.providers(for: root).contains(PeerID(publicKey: honestProvider.publicKey)))
         // Bounded per root and per identity.
         XCTAssertLessThanOrEqual(Set(result.map(\.publicKey)).count, 4)
@@ -261,35 +263,51 @@ final class ProviderRefreshTests: XCTestCase {
         XCTAssertEqual(Set(records.map(\.endpoint.publicKey)).count, 100)
     }
 
-    /// A key with more providers than one answer holds is answered with a
-    /// fresh sample each time: the identities that sort first are not in
-    /// every answer, and across answers every provider is named.
-    func testProviderAnswersAreAFreshSampleOfAKeysProviders() {
+    /// A full root keeps the same providers whatever order or how often they
+    /// announce: announcing more often buys no place.
+    func testAFullRootsProvidersDoNotDependOnWhoAnnouncesMostOften() {
+        func kept(_ announces: [Int]) -> Set<String> {
+            let sim = Simulation()
+            let node = sim.node()
+            for identity in announces {
+                let peer = PeerID(publicKey: String(format: "often-provider-%03d", identity))
+                node.core.storeProviderHint(
+                    rootCID: "root", peer: peer,
+                    endpoint: PeerEndpoint(publicKey: peer.publicKey, host: "8.\(identity).0.1", port: 4000),
+                    expiresAt: sim.unixSeconds + 600)
+            }
+            return Set(node.core.providerHints["root"]?.map(\.peer.publicKey) ?? [])
+        }
+        let once = kept(Array(0..<60))
+        // Ten of them re-announce after everyone, again and again.
+        let often = kept(Array(0..<60) + Array(repeating: Array(40..<50), count: 5).flatMap { $0 })
+        let reversed = kept(Array((0..<60).reversed()))
+        XCTAssertEqual(once.count, IvyConfig(signingKey: .init()).kBucketSize)
+        XCTAssertEqual(often, once)
+        XCTAssertEqual(reversed, once)
+    }
+
+    /// Providers flooding a full root from one netgroup shed each other, not
+    /// the providers spread across others.
+    func testAFloodFromOneNetgroupShedsItsOwn() {
         let sim = Simulation()
         let node = sim.node()
-        let expiry = sim.unixSeconds + 60
-        let count = Int(MessageLimits.maxNeighborCount) * 4
-        let hints = (0..<count).map { identity -> ProviderHint in
-            let peer = PeerID(publicKey: String(format: "sample-provider-%04d", identity))
-            return ProviderHint(
-                peer: peer,
-                endpoint: PeerEndpoint(
-                    publicKey: peer.publicKey, host: "8.\(identity / 256).\(identity % 256).1", port: 4000),
-                expiresAt: expiry,
-                source: peer)
+        let spread = (0..<10).map { PeerID(publicKey: String(format: "spread-provider-%03d", $0)) }
+        for (index, peer) in spread.enumerated() {
+            node.core.storeProviderHint(
+                rootCID: "root", peer: peer,
+                endpoint: PeerEndpoint(publicKey: peer.publicKey, host: "8.\(index).0.1", port: 4000),
+                expiresAt: sim.unixSeconds + 600)
         }
-        let lowest = Set(hints.map(\.peer.publicKey).sorted().prefix(Int(MessageLimits.maxNeighborCount)))
-        var named = Set<String>()
-        var answers: [Set<String>] = []
-        for _ in 0..<32 {
-            let answer = Set(node.core.providerRecordsForWire(hints).map(\.endpoint.publicKey))
-            XCTAssertEqual(answer.count, Int(MessageLimits.maxNeighborCount))
-            answers.append(answer)
-            named.formUnion(answer)
+        for index in 0..<200 {
+            let peer = PeerID(publicKey: String(format: "flood-provider-%03d", index))
+            node.core.storeProviderHint(
+                rootCID: "root", peer: peer,
+                endpoint: PeerEndpoint(publicKey: peer.publicKey, host: "9.9.\(index).1", port: 4000),
+                expiresAt: sim.unixSeconds + 600)
         }
-        XCTAssertFalse(answers.contains(lowest))
-        XCTAssertEqual(Set(answers).count, answers.count)
-        XCTAssertEqual(named.count, count)
+        let kept = Set(node.core.providerHints["root"]?.map(\.peer) ?? [])
+        XCTAssertTrue(kept.isSuperset(of: spread))
     }
 
     /// "provider identities each receive bounded route failover"

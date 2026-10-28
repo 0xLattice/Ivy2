@@ -227,7 +227,7 @@ extension IvyCore {
                 source: peer))
         }
 
-        pending.responsesByPeer[peer.publicKey] = boundedProviderHints(accepted)
+        pending.responsesByPeer[peer.publicKey] = boundedProviderHints(accepted, rootCID: rootCID)
         pendingProviderQueries[rootCID] = pending
         if pending.expectedPeers.isEmpty {
             resolveProviderQuery(rootCID: rootCID, requestID: requestID)
@@ -319,13 +319,13 @@ extension IvyCore {
             }
         }
         setProviderHints(
-            boundedProviderHints((providerHints[rootCID] ?? []) + [hint]),
+            boundedProviderHints((providerHints[rootCID] ?? []) + [hint], rootCID: rootCID),
             rootCID: rootCID)
     }
 
     private func addsProviderRecord(_ hint: ProviderHint, rootCID: String) -> Bool {
         let existing = providerHints[rootCID] ?? []
-        let next = boundedProviderHints(existing + [hint])
+        let next = boundedProviderHints(existing + [hint], rootCID: rootCID)
         return next.filter { $0.source == hint.source }.count
             > existing.filter { $0.source == hint.source }.count
     }
@@ -387,7 +387,14 @@ extension IvyCore {
         providerRecordTotal += delta
     }
 
-    private func boundedProviderHints(_ input: [ProviderHint]) -> [ProviderHint] {
+    /// At most `kBucketSize` providers of `rootCID`, each with at most
+    /// `maxRoutesPerIdentity` routes. A full root sheds a referred-only
+    /// provider before any that announced itself; among those, one from the
+    /// netgroup holding the most, and within it the one ranked lowest by
+    /// this node's secret. Neither announcing more often nor grinding keys
+    /// buys a place: the kept set is decided by who is listed, not by when or
+    /// under what key, and a flood from one netgroup sheds its own first.
+    private func boundedProviderHints(_ input: [ProviderHint], rootCID: String) -> [ProviderHint] {
         var peerOrder: [PeerID] = []
         var routesByPeer: [PeerID: [ProviderHint]] = [:]
         for hint in input {
@@ -398,20 +405,31 @@ extension IvyCore {
             routes.append(hint)
             routesByPeer[hint.peer] = Array(routes.suffix(config.maxRoutesPerIdentity))
         }
-        // A full root sheds the oldest referred-only provider before any that announced itself.
         while peerOrder.count > config.kBucketSize {
-            let index = peerOrder.firstIndex { peer in
+            let referredOnly = peerOrder.filter { peer in
                 routesByPeer[peer]?.contains { $0.source == peer } != true
-            } ?? 0
-            peerOrder.remove(at: index)
+            }
+            let candidates = referredOnly.isEmpty ? peerOrder : referredOnly
+            let byGroup = Dictionary(grouping: candidates) { peer in
+                routesByPeer[peer]?.last?.endpoint.map { NetGroup.group($0.host) } ?? ""
+            }
+            let largest = byGroup.sorted { $0.key < $1.key }.max { $0.value.count < $1.value.count }!.value
+            let shed = largest.min { sheddingRank($0, rootCID).lexicographicallyPrecedes(sheddingRank($1, rootCID)) }!
+            peerOrder.removeAll { $0 == shed }
         }
         return peerOrder.flatMap { routesByPeer[$0] ?? [] }
     }
 
-    private func diversifiedProviderHints(
+    private func sheddingRank(_ peer: PeerID, _ rootCID: String) -> [UInt8] {
+        Router.hash("\(providerSheddingSecret):\(rootCID):\(peer.publicKey)")
+    }
+
+    /// Responders take turns in a fresh random order, so none is first to
+    /// fill the answer by its key.
+    private mutating func diversifiedProviderHints(
         _ responses: [String: [ProviderHint]]
     ) -> [ProviderHint] {
-        let sources = responses.keys.sorted()
+        let sources = random.shuffled(responses.keys.sorted())
         var indices = Dictionary(uniqueKeysWithValues: sources.map { ($0, 0) })
         var selectedPeers: Set<PeerID> = []
         var peers: [PeerID] = []

@@ -20,6 +20,9 @@ public struct IvyCore: Sendable {
     var scheme: any IvySignatureScheme
     var ledger: any PeerLedger
     var random: CoreRandom
+    /// Ranks which provider a full root sheds: derived from the signing key,
+    /// so stable across restarts and unknown to every other peer.
+    let providerSheddingSecret: String
 
     var now = Timestamp(uptime: .zero, unixSeconds: 0)
     var effects: [Effect] = []
@@ -168,6 +171,9 @@ public struct IvyCore: Sendable {
         self.scheme = scheme ?? Ed25519Scheme(signingKey: config.signingKey)
         self.ledger = ledger
         self.random = random
+        self.providerSheddingSecret = Router.hash(
+            "ivy.provider-shedding.v1:" + config.signingKey.rawRepresentation.map { String(format: "%02x", $0) }.joined()
+        ).map { String(format: "%02x", $0) }.joined()
         self.router = Router(localID: PeerID(publicKey: config.publicKey), k: config.kBucketSize)
     }
 

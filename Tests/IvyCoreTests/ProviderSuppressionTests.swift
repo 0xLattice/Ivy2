@@ -64,7 +64,9 @@ final class ProviderSuppressionTests: XCTestCase {
             sim.send(.command(.reportDeficientContent(rootCID: "bad-root", servedBy: peer)), to: node)
         }
 
-        XCTAssertEqual(node.core.providers(for: "root"), Array(retained.suffix(2)))
+        // Two of the three, chosen by the node's secret rank, not recency.
+        XCTAssertEqual(node.core.providers(for: "root").count, 2)
+        XCTAssertTrue(Set(retained).isSuperset(of: node.core.providers(for: "root")))
         XCTAssertEqual(node.core.providerHints["root"]?.map(\.expiresAt), [now + 60, now + 60])
         XCTAssertEqual(node.core.deficientPeerSuppression["bad-root"]?.count, 2)
     }
