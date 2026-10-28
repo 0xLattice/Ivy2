@@ -389,8 +389,9 @@ extension IvyCore {
 
     /// At most `kBucketSize` providers of `rootCID`, each with at most
     /// `maxRoutesPerIdentity` routes. A full root keeps the providers that
-    /// announced themselves before those only referred, and among each the
-    /// ones this node's secret ranks first: who is kept depends on who is
+    /// announced themselves with a route, then those that announced with
+    /// none, then those only referred; among each the ones this node's
+    /// secret ranks first: who is kept depends on who is
     /// listed, not on when, how often or from what address they announced,
     /// and differs from node to node, so no provider is named by every node
     /// holding the root. A kept provider that goes away keeps its place until
@@ -408,14 +409,22 @@ extension IvyCore {
         }
         if peerOrder.count > config.kBucketSize {
             let kept = Set(peerOrder.map { peer in
-                (peer: peer, announced: routesByPeer[peer]?.contains { $0.source == peer } == true,
+                (peer: peer, tier: providerTier(routesByPeer[peer] ?? [], of: peer),
                  rank: sheddingRank(peer, rootCID))
             }.sorted {
-                $0.announced != $1.announced ? $0.announced : $0.rank.lexicographicallyPrecedes($1.rank)
+                $0.tier != $1.tier ? $0.tier < $1.tier : $0.rank.lexicographicallyPrecedes($1.rank)
             }.prefix(config.kBucketSize).map(\.peer))
             peerOrder.removeAll { !kept.contains($0) }
         }
         return peerOrder.flatMap { routesByPeer[$0] ?? [] }
+    }
+
+    /// Announced with a route, then announced with none, then only referred:
+    /// one that no answer can carry holds no place from one that could, and
+    /// what a peer said for itself still outranks what others said for it.
+    private func providerTier(_ routes: [ProviderHint], of peer: PeerID) -> Int {
+        guard routes.contains(where: { $0.source == peer }) else { return 2 }
+        return routes.contains { $0.source == peer && $0.endpoint != nil } ? 0 : 1
     }
 
     private func sheddingRank(_ peer: PeerID, _ rootCID: String) -> [UInt8] {

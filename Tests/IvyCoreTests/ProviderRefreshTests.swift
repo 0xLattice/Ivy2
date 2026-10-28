@@ -57,8 +57,9 @@ final class ProviderRefreshTests: XCTestCase {
         let result = sim.result(of: search, on: node)?.endpoints ?? []
         XCTAssertTrue(result.contains(honestProvider))
         XCTAssertTrue(result.prefix(4).contains(honestProvider))
-        // The flood's routes for the honest identity share the flood's
-        // netgroup and are shed with it; the honest route is what is kept.
+        // In the flood's answer the honest identity competes with the flood's
+        // identities for its few places, so its poisoned routes are almost
+        // always shed; the honest route is what is kept.
         XCTAssertEqual(result.filter { $0.publicKey == honestProvider.publicKey }.first, honestProvider)
         XCTAssertTrue(node.core.providers(for: root).contains(PeerID(publicKey: honestProvider.publicKey)))
         // Bounded per root and per identity.
@@ -284,12 +285,28 @@ final class ProviderRefreshTests: XCTestCase {
             return keptProviders(sim.node(), sim, announcing: announces)
         }
         let once = kept(Array(0..<60))
-        // Ten of them re-announce after everyone, again and again.
-        let often = kept(Array(0..<60) + Array(repeating: Array(40..<50), count: 5).flatMap { $0 })
+        // The first ten, which keeping the latest would shed, re-announce
+        // after everyone, again and again.
+        let often = kept(Array(0..<60) + Array(repeating: Array(0..<10), count: 5).flatMap { $0 })
         let reversed = kept(Array((0..<60).reversed()))
         XCTAssertEqual(once.count, 20)
         XCTAssertEqual(often, once)
         XCTAssertEqual(reversed, once)
+    }
+
+    /// Providers with no route to give an asker hold no place of a full root
+    /// that one with a route could take, however many announce.
+    func testProvidersWithoutARouteDoNotCrowdOutOnesWithARoute() {
+        let sim = Simulation()
+        let node = sim.node()
+        for index in 0..<200 {
+            node.core.storeProviderHint(
+                rootCID: "root", peer: PeerID(publicKey: String(format: "unroutable-%03d", index)),
+                endpoint: nil, expiresAt: sim.unixSeconds + 600)
+        }
+        let routable = keptProviders(node, sim, announcing: Array(0..<20))
+        XCTAssertEqual(routable.filter { $0.hasPrefix("kept-provider-") }.count, 20)
+        XCTAssertEqual(node.core.providerRecordsForWire(node.core.providerHints["root"] ?? []).count, 20)
     }
 
     /// Nodes holding the same full root keep different providers of it, so
