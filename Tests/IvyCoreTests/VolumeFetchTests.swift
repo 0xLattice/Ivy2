@@ -228,6 +228,73 @@ final class VolumeFetchTests: XCTestCase {
 
     // MARK: - Exact sessions
 
+    private func fromSessions(_ peers: [FetchRawPeer], root: String = "root") -> Request {
+        .fetchVolumeFromSessions(
+            peers.map(\.authenticated),
+            rootCID: root,
+            maximumArchiveBytes: wholeVolume,
+            maximumEntries: anyEntryCount)
+    }
+
+    /// Only the sessions named are asked, one at a time, a miss moving on to
+    /// the next, until one sends the Volume. A session named twice is asked
+    /// once.
+    func testNamedSessionsAreAskedOneAtATimeUntilOneSendsTheVolume() throws {
+        let sim = Simulation()
+        let node = sim.fetchNode(requestTimeout: .seconds(1))
+        let peers = (0..<3).map { FetchRawPeer(sim, to: node, index: $0) }
+        let named = Array(peers.prefix(2))
+        let unnamed = peers[2]
+
+        let fetch = sim.request(fromSessions(named + [named[0]]), on: node)
+        let first = try XCTUnwrap(named.first { $0.takeVolumeRequestID() != nil })
+        let second = try XCTUnwrap(named.first { $0 !== first })
+        XCTAssertNil(second.takeVolumeRequest())
+        XCTAssertEqual(node.core.outstandingVolumeRequests, [first.peer: 1])
+
+        first.send(.contentUnavailable(requestID: first.lastVolumeRequestID))
+        XCTAssertNil(sim.result(of: fetch, on: node))
+        XCTAssertNotNil(second.takeVolumeRequestID())
+        second.sendVolume(requestID: second.lastVolumeRequestID, root: "root")
+
+        let response = try XCTUnwrap(sim.result(of: fetch, on: node)?.volume)
+        XCTAssertEqual(response.rootCID, "root")
+        XCTAssertEqual(response.servedBy, second.peer)
+        XCTAssertNil(first.takeVolumeRequest())
+        XCTAssertNil(unnamed.takeVolumeRequest())
+        XCTAssertEqual(node.core.freshProviderQueryCount, 0)
+        assertHoldsNoVolumeBytes(node)
+        XCTAssertTrue(node.core.outstandingVolumeRequests.isEmpty)
+    }
+
+    /// A named session that has been timing out is asked after the others,
+    /// whatever order it was named in.
+    func testANamedSessionThatTimesOutIsAskedLast() throws {
+        for seed in UInt64(1)...6 {
+            let sim = Simulation(seed: seed)
+            let node = sim.fetchNode(requestTimeout: .seconds(1))
+            let stalled = FetchRawPeer(sim, to: node, index: 0)
+            let holder = FetchRawPeer(sim, to: node, index: 1)
+            XCTAssertEqual(sim.await(fromSessions([stalled]), on: node), .volume(.empty))
+            XCTAssertNotNil(stalled.takeVolumeRequest())
+            XCTAssertEqual(node.core.volumeTimeoutStreaks[stalled.peer], 1)
+
+            let fetch = sim.request(fromSessions([stalled, holder]), on: node)
+            XCTAssertNil(stalled.takeVolumeRequest())
+            holder.sendVolume(requestID: try XCTUnwrap(holder.takeVolumeRequestID()), root: "root")
+            XCTAssertEqual(sim.result(of: fetch, on: node)?.volume?.servedBy, holder.peer)
+            assertHoldsNoVolumeBytes(node)
+        }
+    }
+
+    /// Naming nobody asks nobody: a miss, and no search.
+    func testNamingNoSessionIsAMiss() {
+        let (sim, node, peer) = requester()
+        XCTAssertEqual(sim.await(fromSessions([]), on: node), .volume(.empty))
+        XCTAssertNil(peer.takeVolumeRequest())
+        XCTAssertEqual(node.core.freshProviderQueryCount, 0)
+    }
+
     /// An advertised Volume is fenced to the exact authenticated session.
     func testExactVolumeSessionIsFenced() {
         let (sim, node, peer) = requester()

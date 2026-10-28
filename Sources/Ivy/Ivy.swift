@@ -480,6 +480,36 @@ public actor Ivy {
         return response
     }
 
+    /// Fetches one complete Volume from the exact authenticated endpoint
+    /// sessions named: only those are asked, one at a time (those timing out
+    /// last, then the least loaded), until one sends it. Without entries
+    /// when none does or none is named, keeping a `failure` (the caller's
+    /// boundary, this node's capacity) if one ended an attempt.
+    public func fetchVolume(
+        rootCID: String,
+        from peers: [AuthenticatedPeer]
+    ) async -> AttributedVolumeResponse {
+        await fetchVolume(
+            rootCID: rootCID, from: peers, maximumArchiveBytes: .max, maximumEntries: .max)
+    }
+
+    /// `fetchVolume(rootCID:from:)` over sessions, rejecting a response whose
+    /// advertised boundary exceeds the caller's needs before allocating its
+    /// archive.
+    public func fetchVolume(
+        rootCID: String,
+        from peers: [AuthenticatedPeer],
+        maximumArchiveBytes: Int,
+        maximumEntries: Int
+    ) async -> AttributedVolumeResponse {
+        guard case .volume(let response) = await self.await(.fetchVolumeFromSessions(
+            peers,
+            rootCID: rootCID,
+            maximumArchiveBytes: maximumArchiveBytes,
+            maximumEntries: maximumEntries)) else { return .empty }
+        return response
+    }
+
     /// Fetches the Volumes a peer bundles under `rootCID` with one request:
     /// every Volume the peer sent before its answer ended, the root's own
     /// first. Only the sessions named are asked, one at a time, until one

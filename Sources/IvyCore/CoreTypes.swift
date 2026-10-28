@@ -96,6 +96,8 @@ public enum Request: Sendable, Equatable {
     case fetchVolumeFrom(
         AuthenticatedPeer, rootCID: String, maximumArchiveBytes: Int, maximumEntries: Int)
     case fetchVolumeBundle(rootCID: String, from: [AuthenticatedPeer])
+    case fetchVolumeFromSessions(
+        [AuthenticatedPeer], rootCID: String, maximumArchiveBytes: Int, maximumEntries: Int)
     case findNode(target: String)
     case discoverProviders(rootCID: String)
     case recycleSession(AuthenticatedPeer)

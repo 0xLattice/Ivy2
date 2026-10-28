@@ -42,6 +42,14 @@ test('a vector decodes to what its description says', () => {
     id: 9n,
     request: { kind: 'fetchVolume', rootCID: 'root', maximumArchiveBytes: 1048576n, maximumEntries: 16n },
   });
+  const sessions = decodeEvent(find(vectors.events, 'request: fetchVolumeFromSessions, two sessions'));
+  assert.ok(sessions.kind === 'request' && sessions.request.kind === 'fetchVolumeFromSessions');
+  assert.equal(sessions.id, 17n);
+  assert.equal(sessions.request.from.length, 2);
+  assert.deepEqual(
+    [sessions.request.rootCID, sessions.request.maximumArchiveBytes, sessions.request.maximumEntries],
+    ['root', 4096n, 1n],
+  );
   assert.deepEqual(decodeEffect(find(vectors.effects, 'wakeAt: 90.5 seconds')), {
     kind: 'wakeAt',
     deadline: { seconds: 90n, attoseconds: 500_000_000_000_000_000n },

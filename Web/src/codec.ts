@@ -114,7 +114,14 @@ export type Request =
   | { kind: 'findNode'; target: string }
   | { kind: 'discoverProviders'; rootCID: string }
   | { kind: 'recycleSession'; peer: AuthenticatedPeer }
-  | { kind: 'disconnectSession'; peer: AuthenticatedPeer };
+  | { kind: 'disconnectSession'; peer: AuthenticatedPeer }
+  | {
+      kind: 'fetchVolumeFromSessions';
+      from: AuthenticatedPeer[];
+      rootCID: string;
+      maximumArchiveBytes: bigint;
+      maximumEntries: bigint;
+    };
 
 export type Command =
   | { kind: 'disconnect'; peer: PeerID }
@@ -506,6 +513,12 @@ class Writer {
       case 'disconnectSession':
         this.uint8(13);
         return this.peer(value.peer);
+      case 'fetchVolumeFromSessions':
+        this.uint8(14);
+        this.list(value.from, (peer) => this.peer(peer));
+        this.string(value.rootCID);
+        this.int64(value.maximumArchiveBytes);
+        return this.int64(value.maximumEntries);
     }
   }
 
@@ -888,6 +901,14 @@ class Reader {
         return { kind: 'recycleSession', peer: this.peer() };
       case 13:
         return { kind: 'disconnectSession', peer: this.peer() };
+      case 14:
+        return {
+          kind: 'fetchVolumeFromSessions',
+          from: this.list(() => this.peer()),
+          rootCID: this.string(),
+          maximumArchiveBytes: this.int64(),
+          maximumEntries: this.int64(),
+        };
       default:
         throw new Error(`unknown request ${tag}`);
     }
