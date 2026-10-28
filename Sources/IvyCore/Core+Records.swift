@@ -170,7 +170,12 @@ extension IvyCore {
             .providers(rootCID: rootCID, requestID: requestID, records: records))
     }
 
-    func providerRecordsForWire(_ hints: [ProviderHint]) -> [ProviderRecord] {
+    /// At most `maxNeighborCount` records, every identity's first route
+    /// before any identity's second, the identities in a fresh random order:
+    /// a key with more providers than one answer holds names a different
+    /// sample to each asker, so none is named to every asker, and a key
+    /// cannot be held by grinding identities that sort first.
+    mutating func providerRecordsForWire(_ hints: [ProviderHint]) -> [ProviderRecord] {
         let records = hints.compactMap { hint -> ProviderRecord? in
             guard let endpoint = hint.endpoint else { return nil }
             return ProviderRecord(endpoint: endpoint, expiresAt: hint.expiresAt)
@@ -180,8 +185,9 @@ extension IvyCore {
         }
         let byIdentity = Dictionary(grouping: records, by: \.endpoint.publicKey)
         var selected: [ProviderRecord] = []
+        let identities = random.shuffled(byIdentity.keys.sorted())
         for index in 0..<config.maxRoutesPerIdentity {
-            for identity in byIdentity.keys.sorted()
+            for identity in identities
                 where selected.count < Int(MessageLimits.maxNeighborCount) {
                 let routes = byIdentity[identity] ?? []
                 if routes.indices.contains(index) { selected.append(routes[index]) }
@@ -221,7 +227,7 @@ extension IvyCore {
                 source: peer))
         }
 
-        pending.responsesByPeer[peer.publicKey] = boundedProviderHints(accepted)
+        pending.responsesByPeer[peer.publicKey] = boundedProviderHints(accepted, rootCID: rootCID)
         pendingProviderQueries[rootCID] = pending
         if pending.expectedPeers.isEmpty {
             resolveProviderQuery(rootCID: rootCID, requestID: requestID)
@@ -313,13 +319,13 @@ extension IvyCore {
             }
         }
         setProviderHints(
-            boundedProviderHints((providerHints[rootCID] ?? []) + [hint]),
+            boundedProviderHints((providerHints[rootCID] ?? []) + [hint], rootCID: rootCID),
             rootCID: rootCID)
     }
 
     private func addsProviderRecord(_ hint: ProviderHint, rootCID: String) -> Bool {
         let existing = providerHints[rootCID] ?? []
-        let next = boundedProviderHints(existing + [hint])
+        let next = boundedProviderHints(existing + [hint], rootCID: rootCID)
         return next.filter { $0.source == hint.source }.count
             > existing.filter { $0.source == hint.source }.count
     }
@@ -381,7 +387,16 @@ extension IvyCore {
         providerRecordTotal += delta
     }
 
-    private func boundedProviderHints(_ input: [ProviderHint]) -> [ProviderHint] {
+    /// At most `kBucketSize` providers of `rootCID`, each with at most
+    /// `maxRoutesPerIdentity` routes. A full root keeps the providers that
+    /// announced themselves with a route, then those that announced with
+    /// none, then those only referred; among each the ones this node's
+    /// secret ranks first: who is kept depends on who is
+    /// listed, not on when, how often or from what address they announced,
+    /// and differs from node to node, so no provider is named by every node
+    /// holding the root. A kept provider that goes away keeps its place until
+    /// its record expires.
+    private func boundedProviderHints(_ input: [ProviderHint], rootCID: String) -> [ProviderHint] {
         var peerOrder: [PeerID] = []
         var routesByPeer: [PeerID: [ProviderHint]] = [:]
         for hint in input {
@@ -392,20 +407,36 @@ extension IvyCore {
             routes.append(hint)
             routesByPeer[hint.peer] = Array(routes.suffix(config.maxRoutesPerIdentity))
         }
-        // A full root sheds the oldest referred-only provider before any that announced itself.
-        while peerOrder.count > config.kBucketSize {
-            let index = peerOrder.firstIndex { peer in
-                routesByPeer[peer]?.contains { $0.source == peer } != true
-            } ?? 0
-            peerOrder.remove(at: index)
+        if peerOrder.count > config.kBucketSize {
+            let kept = Set(peerOrder.map { peer in
+                (peer: peer, tier: providerTier(routesByPeer[peer] ?? [], of: peer),
+                 rank: sheddingRank(peer, rootCID))
+            }.sorted {
+                $0.tier != $1.tier ? $0.tier < $1.tier : $0.rank.lexicographicallyPrecedes($1.rank)
+            }.prefix(config.kBucketSize).map(\.peer))
+            peerOrder.removeAll { !kept.contains($0) }
         }
         return peerOrder.flatMap { routesByPeer[$0] ?? [] }
     }
 
-    private func diversifiedProviderHints(
+    /// Announced with a route, then announced with none, then only referred:
+    /// one that no answer can carry holds no place from one that could, and
+    /// what a peer said for itself still outranks what others said for it.
+    private func providerTier(_ routes: [ProviderHint], of peer: PeerID) -> Int {
+        guard routes.contains(where: { $0.source == peer }) else { return 2 }
+        return routes.contains { $0.source == peer && $0.endpoint != nil } ? 0 : 1
+    }
+
+    private func sheddingRank(_ peer: PeerID, _ rootCID: String) -> [UInt8] {
+        Router.hash("\(providerSheddingSecret):\(rootCID):\(peer.publicKey)")
+    }
+
+    /// Responders take turns in a fresh random order, so none is first to
+    /// fill the answer by its key.
+    private mutating func diversifiedProviderHints(
         _ responses: [String: [ProviderHint]]
     ) -> [ProviderHint] {
-        let sources = responses.keys.sorted()
+        let sources = random.shuffled(responses.keys.sorted())
         var indices = Dictionary(uniqueKeysWithValues: sources.map { ($0, 0) })
         var selectedPeers: Set<PeerID> = []
         var peers: [PeerID] = []

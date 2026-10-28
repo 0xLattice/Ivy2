@@ -57,7 +57,10 @@ final class ProviderRefreshTests: XCTestCase {
         let result = sim.result(of: search, on: node)?.endpoints ?? []
         XCTAssertTrue(result.contains(honestProvider))
         XCTAssertTrue(result.prefix(4).contains(honestProvider))
-        XCTAssertEqual(result.filter { $0.publicKey == honestProvider.publicKey }.count, 3)
+        // In the flood's answer the honest identity competes with the flood's
+        // identities for its few places, so its poisoned routes are almost
+        // always shed; the honest route is what is kept.
+        XCTAssertEqual(result.filter { $0.publicKey == honestProvider.publicKey }.first, honestProvider)
         XCTAssertTrue(node.core.providers(for: root).contains(PeerID(publicKey: honestProvider.publicKey)))
         // Bounded per root and per identity.
         XCTAssertLessThanOrEqual(Set(result.map(\.publicKey)).count, 4)
@@ -259,6 +262,60 @@ final class ProviderRefreshTests: XCTestCase {
 
         XCTAssertEqual(records.count, Int(MessageLimits.maxNeighborCount))
         XCTAssertEqual(Set(records.map(\.endpoint.publicKey)).count, 100)
+    }
+
+    private func keptProviders(_ node: Simulation.Node, _ sim: Simulation, announcing announces: [Int]) -> Set<String> {
+        for identity in announces {
+            let peer = PeerID(publicKey: String(format: "kept-provider-%03d", identity))
+            // One shared /16, as hosts behind one proxy appear.
+            node.core.storeProviderHint(
+                rootCID: "root", peer: peer,
+                endpoint: PeerEndpoint(publicKey: peer.publicKey, host: "66.241.\(identity).1", port: 4000),
+                expiresAt: sim.unixSeconds + 600)
+        }
+        return Set(node.core.providerHints["root"]?.map(\.peer.publicKey) ?? [])
+    }
+
+    /// A full root keeps the same providers whatever order or how often they
+    /// announce: announcing more often buys no place.
+    func testAFullRootsProvidersDoNotDependOnWhoAnnouncesMostOften() {
+        // The same node each time: a fresh simulation's first node.
+        func kept(_ announces: [Int]) -> Set<String> {
+            let sim = Simulation()
+            return keptProviders(sim.node(), sim, announcing: announces)
+        }
+        let once = kept(Array(0..<60))
+        // The first ten, which keeping the latest would shed, re-announce
+        // after everyone, again and again.
+        let often = kept(Array(0..<60) + Array(repeating: Array(0..<10), count: 5).flatMap { $0 })
+        let reversed = kept(Array((0..<60).reversed()))
+        XCTAssertEqual(once.count, 20)
+        XCTAssertEqual(often, once)
+        XCTAssertEqual(reversed, once)
+    }
+
+    /// Providers with no route to give an asker hold no place of a full root
+    /// that one with a route could take, however many announce.
+    func testProvidersWithoutARouteDoNotCrowdOutOnesWithARoute() {
+        let sim = Simulation()
+        let node = sim.node()
+        for index in 0..<200 {
+            node.core.storeProviderHint(
+                rootCID: "root", peer: PeerID(publicKey: String(format: "unroutable-%03d", index)),
+                endpoint: nil, expiresAt: sim.unixSeconds + 600)
+        }
+        let routable = keptProviders(node, sim, announcing: Array(0..<20))
+        XCTAssertEqual(routable.filter { $0.hasPrefix("kept-provider-") }.count, 20)
+        XCTAssertEqual(node.core.providerRecordsForWire(node.core.providerHints["root"] ?? []).count, 20)
+    }
+
+    /// Nodes holding the same full root keep different providers of it, so
+    /// no provider is named by every one of them.
+    func testNodesHoldingAFullRootKeepDifferentProviders() {
+        let sim = Simulation()
+        let kept = (0..<4).map { _ in keptProviders(sim.node(), sim, announcing: Array(0..<60)) }
+        XCTAssertEqual(Set(kept).count, kept.count)
+        XCTAssertGreaterThan(kept.reduce(Set()) { $0.union($1) }.count, 20)
     }
 
     /// "provider identities each receive bounded route failover"
