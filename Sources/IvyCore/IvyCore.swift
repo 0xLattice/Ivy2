@@ -451,7 +451,14 @@ public struct IvyCore: Sendable {
             fetchVolume(
                 id,
                 rootCID: rootCID,
-                from: peer,
+                from: [peer],
+                maximumArchiveBytes: maximumArchiveBytes,
+                maximumEntries: maximumEntries)
+        case let .fetchVolumeFromSessions(peers, rootCID, maximumArchiveBytes, maximumEntries):
+            fetchVolume(
+                id,
+                rootCID: rootCID,
+                from: peers,
                 maximumArchiveBytes: maximumArchiveBytes,
                 maximumEntries: maximumEntries)
         case let .fetchVolumeBundle(rootCID, peers):

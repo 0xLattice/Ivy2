@@ -83,6 +83,12 @@ final class EventCodecTests: XCTestCase {
         ("request: discoverProviders", .request(RequestID(14), .discoverProviders(rootCID: "root"))),
         ("request: recycleSession", .request(RequestID(15), .recycleSession(direct))),
         ("request: disconnectSession", .request(RequestID(16), .disconnectSession(relayed))),
+        ("request: fetchVolumeFromSessions, two sessions",
+         .request(RequestID(17), .fetchVolumeFromSessions(
+            [direct, relayed], rootCID: "root", maximumArchiveBytes: 4096, maximumEntries: 1))),
+        ("request: fetchVolumeFromSessions, nobody named",
+         .request(RequestID(18), .fetchVolumeFromSessions(
+            [], rootCID: "root", maximumArchiveBytes: .max, maximumEntries: .max))),
         ("cancel", .cancel(RequestID(8))),
         ("command: disconnect", .command(.disconnect(peer))),
         ("command: restartConfiguredSession", .command(.restartConfiguredSession(peer))),
@@ -221,6 +227,7 @@ final class EventCodecTests: XCTestCase {
             case .discoverProviders: return "request.discoverProviders"
             case .recycleSession: return "request.recycleSession"
             case .disconnectSession: return "request.disconnectSession"
+            case .fetchVolumeFromSessions: return "request.fetchVolumeFromSessions"
             }
         case .cancel: return "cancel"
         case .command(let command):
@@ -294,7 +301,7 @@ final class EventCodecTests: XCTestCase {
     }
 
     func testEveryCaseHasASample() {
-        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 36)
+        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 37)
         XCTAssertEqual(Set(Self.effects.map { name($0.1) }).count, 37)
         XCTAssertEqual(Set(Self.events.map(\.0)).count, Self.events.count, "descriptions repeat")
         XCTAssertEqual(Set(Self.effects.map(\.0)).count, Self.effects.count, "descriptions repeat")

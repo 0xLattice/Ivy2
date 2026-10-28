@@ -102,6 +102,7 @@ bare lower-case one.
 | 11 | `discoverProviders` | `string` rootCID |
 | 12 | `recycleSession` | `peer` |
 | 13 | `disconnectSession` | `peer` |
+| 14 | `fetchVolumeFromSessions` | `list<peer>` from, `string` rootCID, `size` maximumArchiveBytes, `size` maximumEntries |
 
 ### Command
 

@@ -139,17 +139,26 @@ extension IvyCore {
     }
 
     /// Fetches one complete Volume from the exact authenticated endpoint
-    /// session that advertised it, rejecting a response whose advertised
-    /// boundary exceeds the caller's needs before allocating its archive.
+    /// sessions named, rejecting a response whose advertised boundary
+    /// exceeds the caller's needs before allocating its archive. Only the
+    /// sessions named are asked, one at a time (timing out last, then least
+    /// loaded, as Volume requests are), until one sends the Volume; a peer
+    /// named twice is asked once, on the session named last.
     mutating func fetchVolume(
         _ request: RequestID,
         rootCID: String,
-        from peer: AuthenticatedPeer,
+        from peers: [AuthenticatedPeer],
         maximumArchiveBytes: Int,
         maximumEntries: Int
     ) {
         guard MessageLimits.accepts(rootCID), maximumArchiveBytes > 0, maximumEntries > 0 else {
             return complete(request, .volume(.empty))
+        }
+        var sessions: [PeerID: AuthenticatedPeer] = [:]
+        var order: [PeerID] = []
+        for peer in peers {
+            if sessions[peer.id] == nil { order.append(peer.id) }
+            sessions[peer.id] = peer
         }
         let id = makeID()
         var fetch = VolumeFetch(
@@ -157,8 +166,8 @@ extension IvyCore {
             rootCID: rootCID,
             maximumArchiveBytes: min(maximumArchiveBytes, MessageLimits.maxVolumeArchiveBytes),
             maximumEntries: min(maximumEntries, Int(MessageLimits.maxVolumeEntryCount)),
-            plan: .sessions([peer.id: peer], bundle: false))
-        fetch.remaining = [peer.id]
+            plan: .sessions(sessions, bundle: false))
+        fetch.remaining = order
         volumeFetches[id] = fetch
         requests[request] = .volumeFetch(id)
         askNextVolumePeer(id)

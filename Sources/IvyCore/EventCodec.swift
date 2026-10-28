@@ -305,6 +305,12 @@ struct CodecWriter {
         case .disconnectSession(let peer):
             uint8(13)
             self.peer(peer)
+        case let .fetchVolumeFromSessions(peers, rootCID, maximumArchiveBytes, maximumEntries):
+            uint8(14)
+            list(peers) { $0.peer($1) }
+            string(rootCID)
+            int64(Int64(maximumArchiveBytes))
+            int64(Int64(maximumEntries))
         }
     }
 
@@ -710,6 +716,12 @@ struct CodecReader {
             return .recycleSession(try peer())
         case 13:
             return .disconnectSession(try peer())
+        case 14:
+            return .fetchVolumeFromSessions(
+                try list { try $0.peer() },
+                rootCID: try string(),
+                maximumArchiveBytes: try size(),
+                maximumEntries: try size())
         default:
             throw Malformed()
         }
