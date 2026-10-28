@@ -103,6 +103,7 @@ bare lower-case one.
 | 12 | `recycleSession` | `peer` |
 | 13 | `disconnectSession` | `peer` |
 | 14 | `fetchVolumeFromSessions` | `list<peer>` from, `string` rootCID, `size` maximumArchiveBytes, `size` maximumEntries |
+| 15 | `fetchVolumePreferring` | `list<peerID>` preferred, `string` rootCID, `size` maximumArchiveBytes, `size` maximumEntries |
 
 ### Command
 

@@ -86,6 +86,10 @@ struct VolumeFetch: Sendable {
     var remaining: [PeerID] = []
     var last = AttributedVolumeBundleResponse.empty
     var lastSingle = AttributedVolumeResponse.empty
+    /// Peers the caller expects to hold the Volume: among the connected
+    /// peers they are listed first, and among candidates asked before the
+    /// others that are not timing out.
+    var preferred = Set<PeerID>()
 
     var isBundle: Bool {
         if case .sessions(_, true) = plan { return true }
@@ -108,23 +112,27 @@ extension IvyCore {
 
     /// Fetches one complete Volume without accepting a response whose declared
     /// archive or entry count exceeds the caller's local capacity. Provider
-    /// selection may use any connected endpoint advertising the root.
+    /// selection may use any connected endpoint advertising the root;
+    /// `preferring` names peers to favour (`VolumeFetch.preferred`).
     mutating func fetchVolume(
         _ request: RequestID,
         rootCID: String,
         maximumArchiveBytes: Int,
-        maximumEntries: Int
+        maximumEntries: Int,
+        preferring: [PeerID] = []
     ) {
         guard MessageLimits.accepts(rootCID), maximumArchiveBytes > 0, maximumEntries > 0 else {
             return complete(request, .volume(.empty))
         }
         let id = makeID()
-        volumeFetches[id] = VolumeFetch(
+        var fetch = VolumeFetch(
             request: request,
             rootCID: rootCID,
             maximumArchiveBytes: min(maximumArchiveBytes, MessageLimits.maxVolumeArchiveBytes),
             maximumEntries: min(maximumEntries, Int(MessageLimits.maxVolumeEntryCount)),
             plan: .discover)
+        fetch.preferred = Set(preferring)
+        volumeFetches[id] = fetch
         requests[request] = .volumeFetch(id)
 
         if hasContentSource, hasFreeServingSlot, tryReserveServingVolumeRead() {
@@ -300,7 +308,11 @@ extension IvyCore {
         case 0:
             peers = connectedProviderIDs(for: fetch.rootCID)
         case 1:
-            peers = connectedFallbackCandidates(rootCID: fetch.rootCID)
+            let connected = Set(connectedEndpointPeers)
+            let preferred = fetch.preferred
+                .filter { connected.contains($0) && !isDeficiencySuppressed(rootCID: fetch.rootCID, peer: $0) }
+                .sorted { $0.publicKey < $1.publicKey }
+            peers = preferred + connectedFallbackCandidates(rootCID: fetch.rootCID)
         default:
             peers = connectedProviderIDs(for: fetch.rootCID, including: fetch.fresh)
         }
@@ -331,15 +343,20 @@ extension IvyCore {
             guard !fetch.remaining.isEmpty else { return volumeCandidatesExhausted(id) }
             guard isRunning else { return finishVolumeFetch(id, .empty) }
 
-            // Peers that have been timing out last, then the least loaded,
-            // ties at random so no peer is always asked first.
+            // Peers that have been timing out last, then the preferred, then
+            // the least loaded, ties at random so no peer is always asked
+            // first.
             let open = fetch.remaining.filter {
                 outstandingVolumeRequests[$0, default: 0] < config.maxOutstandingVolumeRequestsPerPeer
             }
-            guard let peer = random.shuffled(open).min(by: { lhs, rhs in
-                (volumeTimeoutStreaks[lhs, default: 0], outstandingVolumeRequests[lhs, default: 0])
-                    < (volumeTimeoutStreaks[rhs, default: 0], outstandingVolumeRequests[rhs, default: 0])
-            }) else {
+            func rank(_ peer: PeerID) -> (Int, Int, Int) {
+                (
+                    volumeTimeoutStreaks[peer, default: 0],
+                    fetch.preferred.contains(peer) ? 0 : 1,
+                    outstandingVolumeRequests[peer, default: 0]
+                )
+            }
+            guard let peer = random.shuffled(open).min(by: { rank($0) < rank($1) }) else {
                 fetch.phase = .waitingSlot
                 volumeFetches[id] = fetch
                 if !outstandingVolumeSlotWaiters.contains(id) { outstandingVolumeSlotWaiters.append(id) }

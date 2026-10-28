@@ -480,6 +480,36 @@ public actor Ivy {
         return response
     }
 
+    /// `fetchVolume(rootCID:)`, favouring `preferred`, the peers the caller
+    /// expects to hold it (a chain's current peers): among the connected
+    /// peers they are asked first, and among any candidates before the
+    /// others, except one that has been timing out, which is still asked
+    /// after the peers that have not. A hint for whom to ask, never for
+    /// what to accept; with none preferred it is `fetchVolume(rootCID:)`.
+    public func fetchVolume(
+        rootCID: String,
+        preferring preferred: [PeerID]
+    ) async -> AttributedVolumeResponse {
+        await fetchVolume(
+            rootCID: rootCID, preferring: preferred, maximumArchiveBytes: .max, maximumEntries: .max)
+    }
+
+    /// `fetchVolume(rootCID:preferring:)`, rejecting a response whose
+    /// declared archive or entry count exceeds the caller's local capacity.
+    public func fetchVolume(
+        rootCID: String,
+        preferring preferred: [PeerID],
+        maximumArchiveBytes: Int,
+        maximumEntries: Int
+    ) async -> AttributedVolumeResponse {
+        guard case .volume(let response) = await self.await(.fetchVolumePreferring(
+            preferred,
+            rootCID: rootCID,
+            maximumArchiveBytes: maximumArchiveBytes,
+            maximumEntries: maximumEntries)) else { return .empty }
+        return response
+    }
+
     /// Fetches one complete Volume from the exact authenticated endpoint
     /// sessions named: only those are asked, one at a time (those timing out
     /// last, then the least loaded), until one sends it. Without entries

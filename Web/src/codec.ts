@@ -116,6 +116,13 @@ export type Request =
   | { kind: 'recycleSession'; peer: AuthenticatedPeer }
   | { kind: 'disconnectSession'; peer: AuthenticatedPeer }
   | {
+      kind: 'fetchVolumePreferring';
+      preferred: PeerID[];
+      rootCID: string;
+      maximumArchiveBytes: bigint;
+      maximumEntries: bigint;
+    }
+  | {
       kind: 'fetchVolumeFromSessions';
       from: AuthenticatedPeer[];
       rootCID: string;
@@ -513,6 +520,12 @@ class Writer {
       case 'disconnectSession':
         this.uint8(13);
         return this.peer(value.peer);
+      case 'fetchVolumePreferring':
+        this.uint8(15);
+        this.list(value.preferred, (peer) => this.string(peer));
+        this.string(value.rootCID);
+        this.int64(value.maximumArchiveBytes);
+        return this.int64(value.maximumEntries);
       case 'fetchVolumeFromSessions':
         this.uint8(14);
         this.list(value.from, (peer) => this.peer(peer));
@@ -901,6 +914,14 @@ class Reader {
         return { kind: 'recycleSession', peer: this.peer() };
       case 13:
         return { kind: 'disconnectSession', peer: this.peer() };
+      case 15:
+        return {
+          kind: 'fetchVolumePreferring',
+          preferred: this.list(() => this.string()),
+          rootCID: this.string(),
+          maximumArchiveBytes: this.int64(),
+          maximumEntries: this.int64(),
+        };
       case 14:
         return {
           kind: 'fetchVolumeFromSessions',

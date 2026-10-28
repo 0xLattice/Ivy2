@@ -50,6 +50,13 @@ test('a vector decodes to what its description says', () => {
     [sessions.request.rootCID, sessions.request.maximumArchiveBytes, sessions.request.maximumEntries],
     ['root', 4096n, 1n],
   );
+  const preferring = decodeEvent(find(vectors.events, 'request: fetchVolumePreferring, two peers'));
+  assert.ok(preferring.kind === 'request' && preferring.request.kind === 'fetchVolumePreferring');
+  assert.equal(preferring.request.preferred.length, 2);
+  assert.deepEqual(
+    [preferring.request.rootCID, preferring.request.maximumArchiveBytes, preferring.request.maximumEntries],
+    ['root', 4096n, 1n],
+  );
   assert.deepEqual(decodeEffect(find(vectors.effects, 'wakeAt: 90.5 seconds')), {
     kind: 'wakeAt',
     deadline: { seconds: 90n, attoseconds: 500_000_000_000_000_000n },

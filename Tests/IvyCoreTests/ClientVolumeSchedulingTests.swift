@@ -52,6 +52,56 @@ final class ClientVolumeSchedulingTests: XCTestCase {
         XCTAssertTrue(client.core.outstandingVolumeRequests.isEmpty)
     }
 
+    private func fetch(_ root: String, preferring preferred: [PeerID]) -> Request {
+        .fetchVolumePreferring(
+            preferred,
+            rootCID: root,
+            maximumArchiveBytes: MessageLimits.maxVolumeArchiveBytes,
+            maximumEntries: Int(MessageLimits.maxVolumeEntryCount))
+    }
+
+    /// Among connected peers that all hold the Volume, the preferred one is
+    /// asked, and no other.
+    func testThePreferredPeerIsAskedFirst() {
+        for seed in UInt64(1)...8 {
+            let (sim, client, servers) = fixture(seed: seed, servers: [["root"], ["root"], ["root"]])
+            let response = sim.await(fetch("root", preferring: [servers[2].peer]), on: client)?.volume
+            XCTAssertEqual(response?.servedBy, servers[2].peer, "seed \(seed)")
+            XCTAssertEqual(servers.map(\.volumeReadsStarted.count), [0, 0, 1], "seed \(seed)")
+        }
+    }
+
+    /// A preferred peer without the Volume costs one round trip: the others
+    /// are asked next.
+    func testAPreferredPeerWithoutTheVolumeIsAMiss() {
+        for seed in UInt64(1)...8 {
+            let (sim, client, servers) = fixture(seed: seed, servers: [["root"], []])
+            let response = sim.await(fetch("root", preferring: [servers[1].peer]), on: client)?.volume
+            XCTAssertEqual(response?.servedBy, servers[0].peer, "seed \(seed)")
+            XCTAssertFalse(servers[1].startedJobs.isEmpty, "seed \(seed)")
+        }
+    }
+
+    /// Preference is no shield for a peer that times out: once it has, it is
+    /// asked after a peer that has not, preferred or not.
+    func testAPreferredPeerThatTimesOutIsAskedAfterTheOthers() {
+        for seed in UInt64(1)...8 {
+            let (sim, client, servers) = fixture(
+                seed: seed, servers: [["a", "b"], ["a", "b"]], requestTimeout: .seconds(1))
+            let (silent, holder) = (servers[0], servers[1])
+            silent.stallsStorage = true
+
+            let first = sim.await(fetch("a", preferring: [silent.peer]), on: client)?.volume
+            XCTAssertEqual(first?.servedBy, holder.peer, "seed \(seed)")
+            XCTAssertEqual(client.core.volumeTimeoutStreaks[silent.peer], 1, "seed \(seed)")
+            let asked = silent.startedJobs.count
+
+            let second = sim.await(fetch("b", preferring: [silent.peer]), on: client)?.volume
+            XCTAssertEqual(second?.servedBy, holder.peer, "seed \(seed)")
+            XCTAssertEqual(silent.startedJobs.count, asked, "seed \(seed)")
+        }
+    }
+
     /// A miss moves on to the next peer.
     func testMissRotatesToNextPeer() {
         var missedFirst = 0

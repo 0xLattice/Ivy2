@@ -51,8 +51,9 @@ Ivy supplies a few small primitives that applications compose:
 
 - `broadcastMessage` announces gossip to the currently connected peers.
 - `sendMessage` carries directed sync requests and responses.
-- `fetchVolume` retrieves one complete bounded Volume from one provider, or
-  only from the sessions named (`from:`), asked one at a time.
+- `fetchVolume` retrieves one complete bounded Volume from one provider,
+  favouring peers the caller expects to hold it (`preferring:`), or only from
+  the sessions named (`from:`), asked one at a time.
 - `fetchVolumeBundle` retrieves, with one request, the Volumes a named peer bundles under a root.
 
 The caller defines gossip IDs, deduplication, forwarding, sync order, and CID

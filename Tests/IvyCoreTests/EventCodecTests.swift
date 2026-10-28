@@ -86,6 +86,9 @@ final class EventCodecTests: XCTestCase {
         ("request: fetchVolumeFromSessions, two sessions",
          .request(RequestID(17), .fetchVolumeFromSessions(
             [direct, relayed], rootCID: "root", maximumArchiveBytes: 4096, maximumEntries: 1))),
+        ("request: fetchVolumePreferring, two peers",
+         .request(RequestID(19), .fetchVolumePreferring(
+            [peer, key(5).peerID], rootCID: "root", maximumArchiveBytes: 4096, maximumEntries: 1))),
         ("request: fetchVolumeFromSessions, nobody named",
          .request(RequestID(18), .fetchVolumeFromSessions(
             [], rootCID: "root", maximumArchiveBytes: .max, maximumEntries: .max))),
@@ -228,6 +231,7 @@ final class EventCodecTests: XCTestCase {
             case .recycleSession: return "request.recycleSession"
             case .disconnectSession: return "request.disconnectSession"
             case .fetchVolumeFromSessions: return "request.fetchVolumeFromSessions"
+            case .fetchVolumePreferring: return "request.fetchVolumePreferring"
             }
         case .cancel: return "cancel"
         case .command(let command):
@@ -301,7 +305,7 @@ final class EventCodecTests: XCTestCase {
     }
 
     func testEveryCaseHasASample() {
-        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 37)
+        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 38)
         XCTAssertEqual(Set(Self.effects.map { name($0.1) }).count, 37)
         XCTAssertEqual(Set(Self.events.map(\.0)).count, Self.events.count, "descriptions repeat")
         XCTAssertEqual(Set(Self.effects.map(\.0)).count, Self.effects.count, "descriptions repeat")
