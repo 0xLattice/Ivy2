@@ -184,11 +184,14 @@ extension Simulation {
         stunServers: [(String, Int)] = [],
         routingRefreshInterval: Duration = .seconds(120),
         maxConnections: Int = IvyConfig.defaultMaxConnections,
+        reservedOutboundConnectionSlots: Int = 0,
         maxConnectionsPerNetgroup: Int = 2,
         maxContentCandidates: Int = 8,
         maxRoutesPerIdentity: Int = IvyConfig.defaultMaxRoutesPerIdentity,
         maxProviderTTLSeconds: UInt64 = IvyConfig.defaultMaxProviderTTLSeconds,
         maxProviderRecordsPerPeer: Int = IvyConfig.defaultMaxProviderRecordsPerPeer,
+        providerReach: ProviderReach = .walk,
+        maxProviderWalkSessions: Int = IvyConfig.defaultMaxProviderWalkSessions,
         externalAddress: (host: String, port: UInt16)? = nil,
         privateContentExchangeEnabled: Bool = false,
         start: Bool = true
@@ -203,11 +206,14 @@ extension Simulation {
                 healthConfig: PeerHealthConfig(enabled: false),
                 routingRefreshInterval: routingRefreshInterval,
                 maxConnections: maxConnections,
+                reservedOutboundConnectionSlots: reservedOutboundConnectionSlots,
                 maxConnectionsPerNetgroup: maxConnectionsPerNetgroup,
                 maxContentCandidates: maxContentCandidates,
                 maxRoutesPerIdentity: maxRoutesPerIdentity,
                 maxProviderTTLSeconds: maxProviderTTLSeconds,
                 maxProviderRecordsPerPeer: maxProviderRecordsPerPeer,
+                providerReach: providerReach,
+                maxProviderWalkSessions: maxProviderWalkSessions,
                 externalAddress: externalAddress,
                 privateContentExchangeEnabled: privateContentExchangeEnabled,
                 mode: mode)
@@ -243,6 +249,27 @@ extension Simulation {
             guard now < end else { return false }
             run(for: .milliseconds(1))
         }
+    }
+
+    /// Lets `node`'s lookups run to their end, each of `peers` answering
+    /// every `findNode` with no one closer. Virtual time does not pass.
+    @discardableResult
+    func settleLookups(on node: Node, answering peers: [DiscoveryScriptedPeer]) -> Bool {
+        settleLookups(on: node) { for peer in peers { peer.answerFindNodes([]) } }
+    }
+
+    @discardableResult
+    func settleLookups(on node: Node, answering peers: [FetchRawPeer]) -> Bool {
+        settleLookups(on: node) { for peer in peers { peer.answerFindNodes() } }
+    }
+
+    private func settleLookups(on node: Node, _ answer: () -> Void) -> Bool {
+        for _ in 0..<64 {
+            answer()
+            if node.core.lookups.isEmpty { return true }
+        }
+        XCTFail("the node's lookups did not end")
+        return false
     }
 
     /// Every endpoint `node` has asked the shell to dial.

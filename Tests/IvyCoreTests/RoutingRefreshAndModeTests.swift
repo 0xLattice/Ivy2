@@ -240,6 +240,7 @@ final class RoutingRefreshAndModeTests: XCTestCase {
 
         // A provider record naming anyone else is a referral too.
         let search = sim.request(.discoverProviders(rootCID: "root"), on: node)
+        sim.settleLookups(on: node, answering: [pinned])
         XCTAssertEqual(pinned.answerFindProviders([ProviderRecord(endpoint: other.endpoint, expiresAt: expiry)]), 1)
         XCTAssertEqual(sim.result(of: search, on: node)?.endpoints, [])
 

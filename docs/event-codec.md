@@ -115,6 +115,7 @@ bare lower-case one.
 | 4 | `reportDeficientContent` | `string` rootCID, `peerID` servedBy |
 | 5 | `setContentSource` | `bool` |
 | 6 | `setRelaying` | `peerID`, `bool` relays |
+| 7 | `stopProviding` | `string` rootCID |
 
 ### Job result
 

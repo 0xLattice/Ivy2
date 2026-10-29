@@ -99,6 +99,12 @@ public struct IvyCore: Sendable {
     var providerRecordTotal = 0
     var pendingProviderQueries: [String: PendingProviderQuery] = [:]
     var providerSearches: [OpID: ProviderSearch] = [:]
+    /// The `findNode` each root's provider searches are waiting on.
+    var providerLookups: [String: OpID] = [:]
+    /// Roots whose announcement walk is running, with the expiry it will announce.
+    var announceWalks: [String: UInt64] = [:]
+    /// Open sessions a provider walk dialed, by the session they were.
+    var providerWalkSessions: [PeerKey: Data] = [:]
     /// DHT provider lookups started, for tests that assert one was avoided.
     public internal(set) var freshProviderQueryCount = 0
     var deficientPeerSuppression: [String: [String: Duration]] = [:]
@@ -305,6 +311,8 @@ public struct IvyCore: Sendable {
         for id in lookups.keys.sorted() { finishLookup(id, cancelled: true) }
         for id in providerSearches.keys.sorted() { finishProviderSearch(id, []) }
         pendingProviderQueries.removeAll()
+        announceWalks.removeAll()
+        providerWalkSessions.removeAll()
         for id in connectGroups.keys.sorted() { connectGroups.removeValue(forKey: id) }
         for id in connectOps.keys.sorted() { finishConnectOp(id, .cancelled) }
         for (request, binding) in requests.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
@@ -379,7 +387,7 @@ public struct IvyCore: Sendable {
             case .relayForward(let link):
                 relayForwardTimedOut(link)
             case .neighbor(let nonce):
-                resolveNeighborResponse(nonce: nonce, endpoints: [])
+                resolveNeighborResponse(nonce: nonce, endpoints: [], answered: false)
             case .providerQuery(let rootCID):
                 if let pending = pendingProviderQueries[rootCID] {
                     resolveProviderQuery(rootCID: rootCID, requestID: pending.requestID)
@@ -518,6 +526,8 @@ public struct IvyCore: Sendable {
             }
         case let .announceProvider(rootCID, expiresAt):
             announceProvider(rootCID: rootCID, expiresAt: expiresAt)
+        case .stopProviding(let rootCID):
+            stopProviding(rootCID: rootCID)
         case let .reportDeficientContent(rootCID, peer):
             reportDeficientContent(rootCID: rootCID, servedBy: peer)
         case .setContentSource(let present):

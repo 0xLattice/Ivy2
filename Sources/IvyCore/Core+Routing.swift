@@ -14,7 +14,11 @@ enum LookupWaiter: Sendable, Equatable {
     case request(RequestID)
     /// The periodic routing refresh.
     case refresh
-    case providerSearch(OpID)
+    /// Finds the root's providers for the searches waiting on it, the round
+    /// `requestID` names.
+    case providerSearch(rootCID: String, requestID: UInt64)
+    /// Finds the root's closest peers to announce to.
+    case announce(rootCID: String)
 }
 
 /// One iterative `findNode`: the candidates found so far, who has been
@@ -24,6 +28,8 @@ struct NodeLookup: Sendable {
     let id: OpID
     let targetHash: [UInt8]
     let waiter: LookupWaiter
+    /// False for a provider walk kept among connected peers.
+    let dials: Bool
     var candidatesByKey: [String: Router.BucketEntry] = [:]
     var routesByKey: [String: [LookupRoute]] = [:]
     var queried: Set<String> = []
@@ -36,6 +42,21 @@ struct NodeLookup: Sendable {
     var failedConnections: Set<String> = []
     var awaiting: Set<UInt64> = []
     var responses: [(PeerID, [PeerEndpoint])] = []
+    /// Peers asked that timed out or left instead of answering, with the
+    /// routes tried. They are no longer candidates, so the walk ends on the
+    /// closest peers that answered; a referral naming a route not yet tried
+    /// makes one a candidate again, once per walk.
+    var unresponsive: [String: [LookupRoute]] = [:]
+    var readmitted: Set<String> = []
+    /// Peers that answered a `findNode` in this walk.
+    var answered: Set<String> = []
+
+    var isProviderWalk: Bool {
+        switch waiter {
+        case .providerSearch, .announce: return true
+        case .request, .refresh: return false
+        }
+    }
 }
 
 extension IvyCore {
@@ -144,14 +165,14 @@ extension IvyCore {
         }
         for nonce in pendingNeighborResponses.keys.sorted()
             where pendingNeighborResponses[nonce]?.peer == peer {
-            resolveNeighborResponse(nonce: nonce, endpoints: [])
+            resolveNeighborResponse(nonce: nonce, endpoints: [], answered: false)
         }
         let peerKey = peer.publicKey
         for rootCID in pendingProviderQueries.keys.sorted() {
             guard var pending = pendingProviderQueries[rootCID],
                   pending.expectedPeers.remove(peerKey) != nil else { continue }
             pendingProviderQueries[rootCID] = pending
-            if pending.expectedPeers.isEmpty {
+            if pending.expectedPeers.isEmpty, !pending.walking {
                 resolveProviderQuery(rootCID: rootCID, requestID: pending.requestID)
             }
         }
@@ -162,14 +183,24 @@ extension IvyCore {
     @discardableResult
     mutating func startLookup(target: String, waiter: LookupWaiter) -> OpID {
         let id = makeID()
-        lookups[id] = NodeLookup(id: id, targetHash: Router.hash(target), waiter: waiter)
+        let providerWalk: Bool
+        switch waiter {
+        case .providerSearch, .announce: providerWalk = true
+        case .request, .refresh: providerWalk = false
+        }
+        lookups[id] = NodeLookup(
+            id: id,
+            targetHash: Router.hash(target),
+            waiter: waiter,
+            dials: !providerWalk || config.providerReach == .walk)
         if case .request(let request) = waiter { requests[request] = .lookup(id) }
         runLookupRound(id)
         return id
     }
 
     private mutating func mergeRouterCandidates(into lookup: inout NodeLookup) {
-        for entry in router.closestPeers(to: lookup.targetHash, count: config.kBucketSize) {
+        for entry in router.closestPeers(to: lookup.targetHash, count: config.kBucketSize)
+            where lookup.unresponsive[entry.id.publicKey] == nil {
             let key = entry.id.publicKey
             lookup.candidatesByKey[key] = entry
             let preferred = hasEndpointSession(entry.id) ? entry.endpoint : nil
@@ -215,8 +246,17 @@ extension IvyCore {
         lookup.starting = true
 
         var dials: [(key: String, routes: [PeerEndpoint])] = []
+        var walkDials = lookup.isProviderWalk ? providerWalkDialsInUse() : 0
         for entry in batch where !hasEndpointSession(entry.id) {
             let key = entry.id.publicKey
+            // A provider walk dials only within its own budget, and never
+            // into the slots held for outbound configured peers.
+            if lookup.isProviderWalk {
+                guard lookup.dials, walkDials < config.maxProviderWalkSessions,
+                      connectionCapacityUsed + dials.count
+                        < config.maxConnections - config.reservedOutboundConnectionSlots else { continue }
+                walkDials += 1
+            }
             let selected = selectedLookupRoutes(
                 lookup.routesByKey[key] ?? [],
                 preferred: nil,
@@ -237,6 +277,19 @@ extension IvyCore {
         guard lookups[id] != nil else { return }
         lookups[id]?.starting = false
         if lookups[id]?.connecting.isEmpty == true { queryLookupBatch(id) }
+    }
+
+    /// Sessions provider walks dialed that are open or still being dialed.
+    func providerWalkDialsInUse() -> Int {
+        providerWalkSessions.count + lookups.values
+            .filter(\.isProviderWalk)
+            .reduce(0) { $0 + $1.connecting.count }
+    }
+
+    /// Whether the connect `op` is a provider walk's dial.
+    func isProviderWalkDial(_ op: OpID?) -> Bool {
+        guard let op, case .lookup(let lookup, _) = connectOps[op]?.waiter else { return false }
+        return lookups[lookup]?.isProviderWalk == true
     }
 
     mutating func lookupConnectFinished(_ id: OpID, key: String, failed: Bool) {
@@ -275,20 +328,36 @@ extension IvyCore {
             }
             timers.set(.neighbor(nonce), at: now.uptime + Self.lookupResponseTimeout)
             lookups[id]?.awaiting.insert(nonce)
+            // A provider search asks the same peer for providers in the same round.
+            if case .providerSearch(let rootCID, _) = lookup.waiter {
+                askForProviders(rootCID: rootCID, peer: entry.id)
+            }
+            guard lookups[id] != nil else { return }
         }
         lookups[id]?.starting = false
         if lookups[id]?.awaiting.isEmpty == true { mergeLookupResponses(id) }
     }
 
-    mutating func resolveNeighborResponse(nonce: UInt64, endpoints: [PeerEndpoint]) {
+    /// `answered` is false when the peer timed out or left instead of answering.
+    mutating func resolveNeighborResponse(nonce: UInt64, endpoints: [PeerEndpoint], answered: Bool = true) {
         guard let pending = pendingNeighborResponses.removeValue(forKey: nonce) else { return }
         timers.cancel(.neighbor(nonce))
         guard var lookup = lookups[pending.lookup], lookup.awaiting.remove(nonce) != nil else {
             return
         }
         if !endpoints.isEmpty { lookup.responses.append((pending.peer, endpoints)) }
+        if answered { lookup.answered.insert(pending.peer.publicKey) }
         lookups[pending.lookup] = lookup
+        if !answered { markLookupPeerUnresponsive(pending.lookup, key: pending.peer.publicKey) }
         if lookup.awaiting.isEmpty, !lookup.starting { mergeLookupResponses(pending.lookup) }
+    }
+
+    private mutating func markLookupPeerUnresponsive(_ id: OpID, key: String) {
+        guard var lookup = lookups[id] else { return }
+        lookup.unresponsive[key] = (lookup.unresponsive[key] ?? []) + (lookup.routesByKey[key] ?? [])
+        lookup.candidatesByKey.removeValue(forKey: key)
+        lookup.answered.remove(key)
+        lookups[id] = lookup
     }
 
     private func authenticatedRoutes() -> [String: PeerEndpoint] {
@@ -305,6 +374,14 @@ extension IvyCore {
             for endpoint in endpoints {
                 let peer = PeerID(publicKey: endpoint.publicKey)
                 let key = peer.publicKey
+                // A walk kept among connected peers takes no one else.
+                guard lookup.dials || hasEndpointSession(peer) else { continue }
+                if let tried = lookup.unresponsive[key] {
+                    guard !lookup.readmitted.contains(key), !hasEndpointSession(peer),
+                          !tried.contains(where: { $0.endpoint == endpoint }) else { continue }
+                    lookup.unresponsive.removeValue(forKey: key)
+                    lookup.readmitted.insert(key)
+                }
                 if lookup.candidatesByKey[key] == nil {
                     lookup.candidatesByKey[key] = Router.BucketEntry(
                         id: peer, hash: Router.hash(key), endpoint: endpoint)
@@ -369,8 +446,13 @@ extension IvyCore {
             if isRunning, config.mode.participatesInPublicDiscovery {
                 timers.set(.routingRefresh, at: now.uptime + config.routingRefreshInterval)
             }
-        case .providerSearch(let search):
-            providerSearchLookupFinished(search)
+        case .providerSearch(let rootCID, let requestID):
+            providerSearchLookupFinished(rootCID: rootCID, requestID: requestID)
+        case .announce(let rootCID):
+            // Only peers that answered are known to be among the closest.
+            announceLookupFinished(
+                rootCID: rootCID,
+                closest: result.filter { lookup.answered.contains($0.publicKey) })
         }
     }
 

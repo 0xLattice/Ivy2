@@ -95,6 +95,7 @@ final class EventCodecTests: XCTestCase {
         ("command: broadcast", .command(.broadcast(topic: "gossip", payload: Data([9, 8, 7])))),
         ("command: announceProvider",
          .command(.announceProvider(rootCID: "root", expiresAt: 1_800_000_000))),
+        ("command: stopProviding", .command(.stopProviding(rootCID: "root"))),
         ("command: reportDeficientContent",
          .command(.reportDeficientContent(rootCID: "root", servedBy: peer))),
         ("command: setContentSource, present", .command(.setContentSource(true))),
@@ -236,6 +237,7 @@ final class EventCodecTests: XCTestCase {
             case .restartConfiguredSession: return "command.restartConfiguredSession"
             case .broadcast: return "command.broadcast"
             case .announceProvider: return "command.announceProvider"
+            case .stopProviding: return "command.stopProviding"
             case .reportDeficientContent: return "command.reportDeficientContent"
             case .setContentSource: return "command.setContentSource"
             case .setRelaying: return "command.setRelaying"
@@ -301,7 +303,7 @@ final class EventCodecTests: XCTestCase {
     }
 
     func testEveryCaseHasASample() {
-        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 37)
+        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 38)
         XCTAssertEqual(Set(Self.effects.map { name($0.1) }).count, 37)
         XCTAssertEqual(Set(Self.events.map(\.0)).count, Self.events.count, "descriptions repeat")
         XCTAssertEqual(Set(Self.effects.map(\.0)).count, Self.effects.count, "descriptions repeat")

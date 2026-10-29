@@ -14,12 +14,16 @@ struct ProviderHint: Sendable, Equatable {
     let source: PeerID
 }
 
-/// One `findProviders` round for a root, shared by every search asking for it.
+/// One provider search for a root, shared by every search asking for it.
+/// The root's `findNode` walk asks each peer it queries for providers as
+/// well, so the answers arrive along the walk.
 struct PendingProviderQuery: Sendable {
     let requestID: UInt64
     var waiters: [OpID]
     var expectedPeers: Set<String>
     var responsesByPeer: [String: [ProviderHint]]
+    /// Set while the root's walk is still running.
+    var walking = true
 }
 
 enum ProviderSearchWaiter: Sendable, Equatable {
@@ -27,12 +31,11 @@ enum ProviderSearchWaiter: Sendable, Equatable {
     case volumeFetch(OpID)
 }
 
-/// A fresh provider lookup: a `findNode` for the root when no connected
-/// peer is close to it, then `findProviders` to the closest.
+/// A fresh provider lookup: one iterative walk toward the root that asks
+/// every peer it queries for both closer peers and providers.
 struct ProviderSearch: Sendable {
     let rootCID: String
     let waiter: ProviderSearchWaiter
-    var lookup: OpID?
 }
 
 extension IvyCore {
@@ -67,54 +70,54 @@ extension IvyCore {
             return id
         }
         freshProviderQueryCount += 1
-        if providerLookupTargets(rootCID: rootCID).isEmpty {
-            let lookup = startLookup(target: rootCID, waiter: .providerSearch(id))
-            if lookups[lookup] != nil { providerSearches[id]?.lookup = lookup }
-        } else {
-            queryProviders(id)
+        if var pending = pendingProviderQueries[rootCID] {
+            guard pending.waiters.count < config.maxWaitersPerRequest else {
+                finishProviderSearch(id, [])
+                return id
+            }
+            pending.waiters.append(id)
+            pendingProviderQueries[rootCID] = pending
+            return id
+        }
+        guard pendingProviderQueries.count < config.maxPendingRequests else {
+            finishProviderSearch(id, [])
+            return id
+        }
+        let requestID = makeWireOperationID(
+            avoiding: Set(pendingProviderQueries.values.map(\.requestID)))
+        pendingProviderQueries[rootCID] = PendingProviderQuery(
+            requestID: requestID, waiters: [id], expectedPeers: [], responsesByPeer: [:])
+        let lookup = startLookup(
+            target: rootCID, waiter: .providerSearch(rootCID: rootCID, requestID: requestID))
+        if lookups[lookup] != nil, pendingProviderQueries[rootCID]?.requestID == requestID {
+            providerLookups[rootCID] = lookup
         }
         return id
     }
 
-    mutating func providerSearchLookupFinished(_ id: OpID) {
-        guard providerSearches[id] != nil else { return }
-        providerSearches[id]?.lookup = nil
-        guard isRunning else { return finishProviderSearch(id, []) }
-        queryProviders(id)
+    /// The root's walk asked `peer` for closer peers: ask it for providers too.
+    mutating func askForProviders(rootCID: String, peer: PeerID) {
+        let key = peer.publicKey
+        guard var pending = pendingProviderQueries[rootCID], pending.walking,
+              !pending.expectedPeers.contains(key), pending.responsesByPeer[key] == nil,
+              case .enqueued = fireToPeer(
+                peer, .findProviders(rootCID: rootCID, requestID: pending.requestID)) else { return }
+        pending.expectedPeers.insert(key)
+        pendingProviderQueries[rootCID] = pending
     }
 
-    private mutating func queryProviders(_ id: OpID) {
-        guard let search = providerSearches[id] else { return }
-        let rootCID = search.rootCID
-        let targets = providerLookupTargets(rootCID: rootCID)
-        guard !targets.isEmpty,
-              pendingProviderQueries[rootCID] != nil
-                || pendingProviderQueries.count < config.maxPendingRequests else {
-            return finishProviderSearch(id, [])
+    /// The root's walk ended. The search ends once the peers it asked have
+    /// answered, or after one response timeout. A walk for a round already
+    /// over touches nothing of the round after it.
+    mutating func providerSearchLookupFinished(rootCID: String, requestID: UInt64) {
+        guard var pending = pendingProviderQueries[rootCID], pending.requestID == requestID,
+              pending.walking else { return }
+        providerLookups.removeValue(forKey: rootCID)
+        pending.walking = false
+        pendingProviderQueries[rootCID] = pending
+        guard isRunning, !pending.expectedPeers.isEmpty else {
+            return resolveProviderQuery(rootCID: rootCID, requestID: pending.requestID)
         }
-        if var pending = pendingProviderQueries[rootCID] {
-            guard pending.waiters.count < config.maxWaitersPerRequest else {
-                return finishProviderSearch(id, [])
-            }
-            pending.waiters.append(id)
-            pendingProviderQueries[rootCID] = pending
-            return
-        }
-        let requestID = makeWireOperationID(
-            avoiding: Set(pendingProviderQueries.values.map(\.requestID)))
-        var expected: Set<String> = []
-        for target in targets {
-            if case .enqueued = fireToPeer(
-                target.id, .findProviders(rootCID: rootCID, requestID: requestID)) {
-                expected.insert(target.id.publicKey)
-            }
-        }
-        guard !expected.isEmpty else { return finishProviderSearch(id, []) }
-        pendingProviderQueries[rootCID] = PendingProviderQuery(
-            requestID: requestID,
-            waiters: [id],
-            expectedPeers: expected,
-            responsesByPeer: [:])
         timers.set(.providerQuery(rootCID), at: now.uptime + Self.lookupResponseTimeout)
     }
 
@@ -123,6 +126,10 @@ extension IvyCore {
               pending.requestID == requestID else { return }
         pendingProviderQueries.removeValue(forKey: rootCID)
         timers.cancel(.providerQuery(rootCID))
+        // A search ended by its last waiter or by `stop` ends its walk.
+        if let lookup = providerLookups.removeValue(forKey: rootCID) {
+            finishLookup(lookup, cancelled: true)
+        }
         let hints = diversifiedProviderHints(pending.responsesByPeer)
         for hint in hints {
             storeProviderHint(
@@ -136,17 +143,19 @@ extension IvyCore {
         for waiter in pending.waiters { finishProviderSearch(waiter, endpoints) }
     }
 
-    /// Ends a search and tells its waiter. Ending the last search of a
-    /// round ends the round.
+    /// Ends a search and tells its waiter. Ending the last search for a
+    /// root ends its walk and its round.
     mutating func finishProviderSearch(_ id: OpID, _ endpoints: [PeerEndpoint]) {
         guard let search = providerSearches.removeValue(forKey: id) else { return }
-        if let lookup = search.lookup { finishLookup(lookup, cancelled: true) }
         if var pending = pendingProviderQueries[search.rootCID],
            let index = pending.waiters.firstIndex(of: id) {
             pending.waiters.remove(at: index)
             if pending.waiters.isEmpty {
                 pendingProviderQueries.removeValue(forKey: search.rootCID)
                 timers.cancel(.providerQuery(search.rootCID))
+                if let lookup = providerLookups.removeValue(forKey: search.rootCID) {
+                    finishLookup(lookup, cancelled: true)
+                }
             } else {
                 pendingProviderQueries[search.rootCID] = pending
             }
@@ -229,15 +238,16 @@ extension IvyCore {
 
         pending.responsesByPeer[peer.publicKey] = boundedProviderHints(accepted, rootCID: rootCID)
         pendingProviderQueries[rootCID] = pending
-        if pending.expectedPeers.isEmpty {
+        if pending.expectedPeers.isEmpty, !pending.walking {
             resolveProviderQuery(rootCID: rootCID, requestID: requestID)
         }
     }
 
     mutating func handleAnnounceProvider(rootCID: String, expiresAt: UInt64, from peer: PeerID) {
         guard config.mode.usesOverlayServices,
-              providerExpiryIsValid(expiresAt),
-              shouldStoreProviderHint(rootCID: rootCID) else { return }
+              providerExpiryIsValid(expiresAt) else { return }
+        // The announcer chose this node as one of the root's closest; the
+        // per-source quota and the table ceiling bound what it may place.
         storeProviderHint(
             rootCID: rootCID,
             peer: peer,
@@ -258,11 +268,41 @@ extension IvyCore {
                 expiresAt: expiresAt,
                 source: localID)
         }
-        let message = Message.announceProvider(rootCID: rootCID, expiresAt: expiresAt)
-        for entry in router.closestPeers(to: Router.hash(rootCID), count: config.kBucketSize)
-            where hasEndpointSession(entry.id) {
-            fireToPeer(entry.id, message)
+        guard isRunning else { return }
+        // A walk already running for the root announces the newest expiry.
+        let walking = announceWalks[rootCID] != nil
+        announceWalks[rootCID] = expiresAt
+        if !walking { startLookup(target: rootCID, waiter: .announce(rootCID: rootCID)) }
+    }
+
+    /// The root's walk ended: the closest peers that answered are told. With
+    /// none, the closest peers already connected are, so an announcement is
+    /// never dropped while this node has anyone to tell.
+    mutating func announceLookupFinished(rootCID: String, closest: [PeerEndpoint]) {
+        guard let expiresAt = announceWalks.removeValue(forKey: rootCID), isRunning else { return }
+        var targets = closest.prefix(config.kBucketSize)
+            .map { PeerID(publicKey: $0.publicKey) }
+            .filter(hasEndpointSession)
+        if targets.isEmpty {
+            targets = router.closestPeers(to: Router.hash(rootCID), count: config.kBucketSize)
+                .map(\.id)
+                .filter(hasEndpointSession)
         }
+        let message = Message.announceProvider(rootCID: rootCID, expiresAt: expiresAt)
+        for peer in targets { fireToPeer(peer, message) }
+    }
+
+    public func isProviderWalkSession(_ peer: AuthenticatedPeer) -> Bool {
+        providerWalkSessions[peer.key] == peer.sessionID
+    }
+
+    /// Stops announcing `rootCID`: drops this node's own record of it and
+    /// any announcement its walk has not sent yet. Records already sent stay
+    /// on their holders until they expire; the wire has no withdrawal.
+    mutating func stopProviding(rootCID: String) {
+        announceWalks.removeValue(forKey: rootCID)
+        guard let hints = providerHints[rootCID] else { return }
+        setProviderHints(hints.filter { $0.source != localID }, rootCID: rootCID)
     }
 
     mutating func cachedProviderEndpoints(rootCID: String) -> [PeerEndpoint] {
@@ -273,13 +313,6 @@ extension IvyCore {
     func uniqueProviderEndpoints(_ endpoints: [PeerEndpoint]) -> [PeerEndpoint] {
         var seen: Set<PeerEndpoint> = []
         return endpoints.filter { seen.insert($0).inserted }
-    }
-
-    func providerLookupTargets(rootCID: String) -> [Router.BucketEntry] {
-        let count = min(6, max(1, config.kBucketSize))
-        return router.closestPeers(to: Router.hash(rootCID), count: count).filter {
-            hasEndpointSession($0.id)
-        }
     }
 
     mutating func storeProviderHint(
@@ -509,16 +542,6 @@ extension IvyCore {
         let now = nowUnix()
         hints.removeAll { $0.expiresAt <= now }
         setProviderHints(hints, rootCID: rootCID)
-    }
-
-    func shouldStoreProviderHint(rootCID: String) -> Bool {
-        let keyHash = Router.hash(rootCID)
-        let peers = router.allPeers()
-        guard peers.count >= config.kBucketSize,
-              let farthest = router.closestPeers(to: keyHash, count: config.kBucketSize).last else {
-            return true
-        }
-        return Router.isCloser(router.localHash, than: farthest.hash, to: keyHash)
     }
 
     func providerExpiryIsValid(_ expiresAt: UInt64) -> Bool {

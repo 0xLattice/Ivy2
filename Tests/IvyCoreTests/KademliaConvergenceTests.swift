@@ -675,10 +675,9 @@ final class KademliaConvergenceTests: XCTestCase {
         sim.run(for: .milliseconds(1))
         XCTAssertEqual(sim.now - started, .milliseconds(500))
 
-        // Silence is not a failed route: the peer keeps its place.
-        XCTAssertEqual(
-            Set(endpoints(sim, lookup, on: node) ?? []),
-            [silent.endpoint, prompt.endpoint])
+        // A lookup ends on the peers that answered; silence is not a failed
+        // route, so the silent peer keeps its routing entry.
+        XCTAssertEqual(endpoints(sim, lookup, on: node), [prompt.endpoint])
         XCTAssertEqual(Set(node.core.knownPeerEndpoints), [silent.endpoint, prompt.endpoint])
         XCTAssertTrue(node.core.pendingNeighborResponses.isEmpty)
         XCTAssertEqual(node.core.diagnostics.pendingRequests, 0)

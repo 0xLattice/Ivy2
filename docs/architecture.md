@@ -295,6 +295,32 @@ source's referrals never evict an announcement. A failed local dial
 does not erase a hint, and a failed address does not suppress a healthy address
 for the same identity.
 
+Announcing and fresh discovery walk the network the way libp2p's Kademlia DHT
+and BitTorrent's BEP 5 do, over the existing messages. A walk is an iterative
+`findNode` for the root; it ends when the `kBucketSize` closest peers that
+answered have all been asked. A peer that times out or leaves drops out of its
+result; a referral naming a route not yet tried brings it back, once per walk.
+A search is one walk that asks every peer it queries for providers in the same
+round, and it ends when the walk and those answers end. However many providers
+early answers name, the walk still reaches the peers nearest the root. Searches
+for one root share one walk.
+
+An announcement walks to the root's closest peers and tells those that
+answered; if none did, it tells the closest peers already connected. Announcing
+a root again while its walk runs updates the expiry that walk sends. A receiver
+stores every valid announcement; the per-source quota and table ceiling bound
+it. `stopProviding` drops the node's own record and any announcement not yet
+sent; records already sent expire on their own, since the wire has no
+withdrawal. Ivy does not republish: when and how often to announce a root again
+is the caller's choice.
+
+`providerReach` chooses what walks may do. `.walk`, the default, dials peers
+not yet connected, at most `maxProviderWalkSessions` open or being dialed and
+never into `reservedOutboundConnectionSlots`. `.connectedPeers` walks only
+among sessions already open and dials no one. A session a walk dialed is an
+ordinary session; `Ivy.isProviderWalkSession` tells the caller which ones
+they are, and keeping or closing them is the caller's choice.
+
 The caller may report content deficient after validation. Ivy then suppresses
 that peer briefly for that root; it does not create peer-global blame, close the
 connection, or affect messages and other roots. A later fetch can use another

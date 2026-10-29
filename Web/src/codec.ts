@@ -130,7 +130,8 @@ export type Command =
   | { kind: 'announceProvider'; rootCID: string; expiresAt: bigint }
   | { kind: 'reportDeficientContent'; rootCID: string; servedBy: PeerID }
   | { kind: 'setContentSource'; present: boolean }
-  | { kind: 'setRelaying'; peer: PeerID; relays: boolean };
+  | { kind: 'setRelaying'; peer: PeerID; relays: boolean }
+  | { kind: 'stopProviding'; rootCID: string };
 
 export type JobResult =
   | { kind: 'entries'; entries: ContentEntry[] }
@@ -549,6 +550,9 @@ class Writer {
         this.uint8(6);
         this.string(value.peer);
         return this.bool(value.relays);
+      case 'stopProviding':
+        this.uint8(7);
+        return this.string(value.rootCID);
     }
   }
 
@@ -935,6 +939,8 @@ class Reader {
         return { kind: 'setContentSource', present: this.bool() };
       case 6:
         return { kind: 'setRelaying', peer: this.string(), relays: this.bool() };
+      case 7:
+        return { kind: 'stopProviding', rootCID: this.string() };
       default:
         throw new Error(`unknown command ${tag}`);
     }

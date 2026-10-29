@@ -187,6 +187,19 @@ final class FetchRawPeer {
         return request.requestID
     }
 
+    /// Answers every `findNode` the node sent with no one closer.
+    @discardableResult
+    func answerFindNodes() -> Int {
+        var asked = 0
+        while let nonce = takeFirst({ message -> UInt64? in
+            if case let .findNode(_, nonce) = message { return nonce } else { return nil }
+        }) {
+            send(.neighbors([], nonce: nonce))
+            asked += 1
+        }
+        return asked
+    }
+
     func takeProviderQuery() -> (requestID: UInt64, rootCID: String)? {
         takeFirst {
             if case let .findProviders(rootCID, requestID) = $0 { return (requestID, rootCID) }
