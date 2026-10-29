@@ -912,8 +912,10 @@ final class VolumeFetchTests: XCTestCase {
         XCTAssertNil(router.takeProviderQuery())
         second.send(.contentUnavailable(requestID: second.lastVolumeRequestID))
 
-        // Only then the network.
+        // Only then the network: one walk toward the root, asking each peer
+        // for closer peers and providers together.
         XCTAssertEqual(node.core.freshProviderQueryCount, 1)
+        sim.settleLookups(on: node, answering: [provider, router, bystander])
         let query = try XCTUnwrap(router.takeProviderQuery())
         XCTAssertNil(sim.result(of: fetch, on: node))
         router.send(.providers(rootCID: "root", requestID: query.requestID, records: []))

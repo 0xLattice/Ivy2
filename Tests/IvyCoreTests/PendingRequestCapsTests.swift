@@ -98,12 +98,16 @@ final class PendingRequestCapsTests: XCTestCase {
         let endpoints = peers.map(\.endpoint)
         XCTAssertEqual(Set(node.core.knownPeerEndpoints), Set(endpoints))
 
+        // The searches share the root's lookup, and its waiters are bounded too.
         let first = sim.request(.discoverProviders(rootCID: "root"), on: node)
-        XCTAssertEqual(node.core.pendingProviderQueries["root"]?.waiters.count, 1)
         let second = sim.request(.discoverProviders(rootCID: "root"), on: node)
-        XCTAssertEqual(node.core.pendingProviderQueries["root"]?.waiters.count, 2)
         let third = sim.request(.discoverProviders(rootCID: "root"), on: node)
         XCTAssertEqual(sim.result(of: third, on: node), .endpoints([]))
+        XCTAssertEqual(node.core.lookups.count, 1)
+        sim.settleLookups(on: node, answering: peers)
+        XCTAssertEqual(node.core.pendingProviderQueries["root"]?.waiters.count, 2)
+        let fourth = sim.request(.discoverProviders(rootCID: "root"), on: node)
+        XCTAssertEqual(sim.result(of: fourth, on: node), .endpoints([]))
 
         // One query on the wire for all of them.
         let requestID = try XCTUnwrap(node.core.pendingProviderQueries["root"]?.requestID)
@@ -147,6 +151,7 @@ final class PendingRequestCapsTests: XCTestCase {
         // The connected peer misses, so the fetch goes on to discovery.
         let fetch = sim.request(volume("cancelled-root"), on: node)
         peer.send(.contentUnavailable(requestID: try XCTUnwrap(peer.takeVolumeRequestID())))
+        sim.settleLookups(on: node, answering: [peer])
         XCTAssertNotNil(node.core.pendingProviderQueries["cancelled-root"])
         XCTAssertEqual(peer.takeProviderQuery()?.rootCID, "cancelled-root")
         XCTAssertEqual(node.core.volumeFetches.values.map(\.phase), [.searching])
@@ -159,8 +164,10 @@ final class PendingRequestCapsTests: XCTestCase {
 
         let replacement = sim.request(volume("replacement-root"), on: node)
         peer.send(.contentUnavailable(requestID: try XCTUnwrap(peer.takeVolumeRequestID())))
-        XCTAssertNotNil(node.core.pendingProviderQueries["replacement-root"])
+        // Cancelled while still looking the root up, the lookup goes with it.
+        XCTAssertEqual(node.core.lookups.count, 1)
         sim.cancel(replacement, on: node)
+        XCTAssertTrue(node.core.lookups.isEmpty)
         XCTAssertEqual(sim.result(of: replacement, on: node), .volume(.empty))
         XCTAssertTrue(node.core.volumeFetches.isEmpty)
         XCTAssertEqual(node.core.diagnostics.pendingRequests, 0)

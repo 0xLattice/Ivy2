@@ -110,6 +110,9 @@ public enum Command: Sendable, Equatable {
     case restartConfiguredSession(PeerID)
     case broadcast(topic: String, payload: Data)
     case announceProvider(rootCID: String, expiresAt: UInt64)
+    /// Stops announcing a root: drops this node's own record and any
+    /// announcement not yet sent. Records already sent expire on their own.
+    case stopProviding(rootCID: String)
     case reportDeficientContent(rootCID: String, servedBy: PeerID)
     /// Whether the shell has a content source to run jobs against.
     case setContentSource(Bool)

@@ -33,6 +33,7 @@ final class ProviderRefreshTests: XCTestCase {
         let routes = IvyConfig.defaultMaxRoutesPerIdentity
 
         let search = sim.request(.discoverProviders(rootCID: root), on: node)
+        sim.settleLookups(on: node, answering: [honestResponder, floodingResponder, finalResponder])
         XCTAssertNotNil(node.core.pendingProviderQueries[root])
 
         XCTAssertEqual(honestResponder.answerFindProviders([record(honestProvider, expiry)]), 1)
@@ -144,12 +145,13 @@ final class ProviderRefreshTests: XCTestCase {
         let provider = sim.node()
         let root = "provider-refresh-root"
         provider.volumes[root] = [ContentEntry(cid: root, data: Data("fresh provider".utf8))]
-        sim.connect(requester, router)
         sim.connect(provider, router)
 
+        // Announced before the requester joins, so only a fresh query finds it.
         let expiry = sim.unixSeconds + 60
         sim.send(.command(.announceProvider(rootCID: root, expiresAt: expiry)), to: provider)
         XCTAssertTrue(sim.run(until: { router.core.providers(for: root).contains(provider.peer) }, timeout: .seconds(1)))
+        sim.connect(requester, router)
 
         // A provider nobody can reach.
         let staleEndpoint = sim.discoveryUnreachableEndpoint(index: 0)
@@ -176,13 +178,14 @@ final class ProviderRefreshTests: XCTestCase {
         let root = "provider-connected-root"
         stale.stallsStorage = true
         provider.volumes[root] = [ContentEntry(cid: root, data: Data("fresh after unavailable".utf8))]
-        sim.connect(requester, router)
-        sim.connect(requester, stale)
         sim.connect(provider, router)
 
+        // Announced before the requester joins, so only a fresh query finds it.
         let expiry = sim.unixSeconds + 60
         sim.send(.command(.announceProvider(rootCID: root, expiresAt: expiry)), to: provider)
         XCTAssertTrue(sim.run(until: { router.core.providers(for: root).contains(provider.peer) }, timeout: .seconds(1)))
+        sim.connect(requester, router)
+        sim.connect(requester, stale)
         requester.core.storeProviderHint(
             rootCID: root, peer: stale.peer, endpoint: stale.endpoint, expiresAt: expiry)
 
@@ -210,6 +213,7 @@ final class ProviderRefreshTests: XCTestCase {
         let expiry = sim.unixSeconds + 60
 
         let search = sim.request(.discoverProviders(rootCID: root), on: node)
+        sim.settleLookups(on: node, answering: [responder])
         XCTAssertEqual(responder.answerFindProviders([record(replacement, expiry), record(failed, expiry)]), 1)
 
         let found = sim.result(of: search, on: node)?.endpoints

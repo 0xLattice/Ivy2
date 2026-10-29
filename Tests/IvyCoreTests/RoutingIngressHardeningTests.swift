@@ -11,7 +11,8 @@ private extension Simulation.Node {
 
     func awaitTestNeighbors(nonce: UInt64, from peer: PeerID) {
         var lookup = core.lookups[Self.testLookup] ?? NodeLookup(
-            id: Self.testLookup, targetHash: Router.hash("routing-test-target"), waiter: .refresh)
+            id: Self.testLookup, targetHash: Router.hash("routing-test-target"), waiter: .refresh,
+            dials: true)
         lookup.starting = true
         lookup.awaiting.insert(nonce)
         core.lookups[Self.testLookup] = lookup

@@ -345,7 +345,8 @@ final class ProviderQuotaTests: XCTestCase {
             requestID: requestID,
             waiters: [search],
             expectedPeers: [responder.publicKey],
-            responsesByPeer: [:])
+            responsesByPeer: [:],
+            walking: false)
         node.handleProvidersResponse(
             rootCID: root, requestID: requestID, records: records, from: responder)
         XCTAssertNil(node.pendingProviderQueries[root])

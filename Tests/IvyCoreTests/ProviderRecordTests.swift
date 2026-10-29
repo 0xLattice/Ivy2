@@ -17,8 +17,8 @@ final class ProviderRecordTests: XCTestCase {
 
     // MARK: - Announcing
 
-    /// The announcer keeps its own record at its advertised address and
-    /// tells the connected peers it holds routes for.
+    /// The announcer keeps its own record at its advertised address, looks
+    /// the root up, and tells the closest peers the lookup reached.
     func testAnnounceStoresOwnRecordAndTellsConnectedPeers() {
         let sim = Simulation()
         let node = sim.discoveryNode(externalAddress: ("8.44.0.1", 5000))
@@ -28,6 +28,9 @@ final class ProviderRecordTests: XCTestCase {
         let expiry = sim.unixSeconds + 60
 
         sim.send(.command(.announceProvider(rootCID: root, expiresAt: expiry)), to: node)
+        XCTAssertEqual(node.core.lookups.first?.value.targetHash, Router.hash(root))
+        XCTAssertTrue(routed.allSatisfy { $0.takeAnnouncements().isEmpty }, "nobody is told before the lookup ends")
+        sim.settleLookups(on: node, answering: routed + [unrouted])
 
         XCTAssertEqual(node.core.providerHints[root], [ProviderHint(
             peer: node.peer,
@@ -53,6 +56,7 @@ final class ProviderRecordTests: XCTestCase {
         let expiry = sim.unixSeconds + 60
 
         sim.send(.command(.announceProvider(rootCID: "root", expiresAt: expiry)), to: node)
+        sim.settleLookups(on: node, answering: [peer])
 
         XCTAssertNil(node.core.localProviderEndpoint())
         XCTAssertTrue(node.core.providerHints.isEmpty)
@@ -85,6 +89,7 @@ final class ProviderRecordTests: XCTestCase {
         let root = "closest-root"
 
         sim.send(.command(.announceProvider(rootCID: root, expiresAt: sim.unixSeconds + 60)), to: node)
+        sim.settleLookups(on: node, answering: peers)
 
         let told = Set(peers.filter { !$0.takeAnnouncements().isEmpty }.map(\.key.hex))
         XCTAssertEqual(told, Set(discoveryClosest(held, to: root).prefix(2)))
@@ -102,9 +107,11 @@ final class ProviderRecordTests: XCTestCase {
             sim.send(.command(.announceProvider(rootCID: root, expiresAt: expiry)), to: node)
         }
         XCTAssertTrue(node.core.providerHints.isEmpty)
+        XCTAssertTrue(node.core.lookups.isEmpty, "nothing is looked up")
         XCTAssertTrue(peer.takeAnnouncements().isEmpty)
 
         sim.send(.command(.announceProvider(rootCID: "edge", expiresAt: now + 100)), to: node)
+        sim.settleLookups(on: node, answering: [peer])
         XCTAssertEqual(node.core.providers(for: "edge"), [node.peer])
         XCTAssertEqual(peer.takeAnnouncements().map(\.rootCID), ["edge"])
     }
@@ -137,33 +144,23 @@ final class ProviderRecordTests: XCTestCase {
         XCTAssertEqual(answer.first?.records, [record(announcer.endpoint, expiry)])
     }
 
-    /// A receiver keeps an announcement only if it is among the k closest nodes it knows to the root.
-    func testReceiverStoresOnlyWhenAmongTheClosestItKnows() {
+    /// A receiver keeps every valid announcement, wherever the root falls
+    /// among the nodes it knows: the announcer chose it as one of the
+    /// root's closest, and its quota bounds what it may place.
+    func testReceiverStoresEveryValidAnnouncement() {
         let sim = Simulation()
-        let node = sim.node(kBucketSize: 2)
+        let node = sim.discoveryNode(kBucketSize: 2, maxProviderRecordsPerPeer: 150)
         let peers = (0..<6).map { DiscoveryScriptedPeer(sim, to: node, index: $0) }
-        let held = node.core.router.allPeers()
-        XCTAssertGreaterThanOrEqual(held.count, 2)
+        XCTAssertGreaterThan(node.core.router.allPeers().count, 2)
         let announcer = peers[0]
         let expiry = sim.unixSeconds + 60
-
-        // Worked out here, independently: is this node closer than the second-closest peer it knows?
-        func isAmongClosest(_ root: String) -> Bool {
-            let closest = discoveryClosest(held.map(\.id.publicKey), to: root)
-            return Router.isCloser(
-                Router.hash(node.key.hex), than: Router.hash(closest[1]), to: Router.hash(root))
-        }
         let roots = (0..<200).map { "store-root-\($0)" }
-        let near = roots.filter(isAmongClosest)
-        let far = roots.filter { !isAmongClosest($0) }
-        XCTAssertFalse(near.isEmpty)
-        XCTAssertFalse(far.isEmpty)
 
         for root in roots { announcer.send(.announceProvider(rootCID: root, expiresAt: expiry)) }
 
-        for root in near { XCTAssertEqual(node.core.providers(for: root), [announcer.peer], root) }
-        for root in far { XCTAssertEqual(node.core.providers(for: root), [], root) }
-        XCTAssertEqual(node.core.providerRecordTotal, near.count)
+        XCTAssertEqual(node.core.providerRecordCount(of: announcer.peer), 150, "up to the quota")
+        XCTAssertEqual(roots.filter { node.core.providers(for: $0) == [announcer.peer] }.count, 150)
+        XCTAssertTrue(node.core.hasEndpointSession(announcer.peer))
     }
 
     /// A node that knows fewer than k peers keeps whatever it is told.
@@ -214,6 +211,7 @@ final class ProviderRecordTests: XCTestCase {
         sim.run(for: .seconds(40))
         let search = sim.request(.discoverProviders(rootCID: "longest"), on: node)
         XCTAssertNil(node.core.providerHints["longest"])
+        sim.settleLookups(on: node, answering: [announcer, asker])
         XCTAssertEqual(announcer.answerFindProviders([]), 1)
         XCTAssertEqual(asker.answerFindProviders([]), 1)
         XCTAssertEqual(sim.result(of: search, on: node)?.endpoints, [])
@@ -232,6 +230,8 @@ final class ProviderRecordTests: XCTestCase {
         let first = sim.request(.discoverProviders(rootCID: "root"), on: node)
         let second = sim.request(.discoverProviders(rootCID: "root"), on: node)
         let other = sim.request(.discoverProviders(rootCID: "other-root"), on: node)
+        XCTAssertEqual(node.core.lookups.count, 2, "one lookup per root")
+        sim.settleLookups(on: node, answering: [responder])
         let asked = responder.takeFindProviders()
         XCTAssertEqual(asked.map(\.rootCID), ["root", "other-root"], "one question per root")
         XCTAssertNotEqual(asked[0].requestID, asked[1].requestID)
@@ -266,6 +266,8 @@ final class ProviderRecordTests: XCTestCase {
         let second = sim.request(.discoverProviders(rootCID: "root"), on: node)
         sim.cancel(first, on: node)
         XCTAssertEqual(sim.result(of: first, on: node)?.endpoints, [])
+        XCTAssertEqual(node.core.lookups.count, 1, "the lookup is left to the other")
+        sim.settleLookups(on: node, answering: [responder])
         XCTAssertNotNil(node.core.pendingProviderQueries["root"])
 
         XCTAssertEqual(responder.answerFindProviders([record(found, sim.unixSeconds + 60)]), 1)
@@ -273,6 +275,7 @@ final class ProviderRecordTests: XCTestCase {
 
         // Cancelling the last one ends the round and its deadline.
         let third = sim.request(.discoverProviders(rootCID: "lonely-root"), on: node)
+        sim.settleLookups(on: node, answering: [responder])
         XCTAssertTrue(node.core.timers.isSet(.providerQuery("lonely-root")))
         sim.cancel(third, on: node)
         XCTAssertEqual(sim.result(of: third, on: node)?.endpoints, [])
@@ -298,6 +301,7 @@ final class ProviderRecordTests: XCTestCase {
 
         let started = sim.now
         let search = sim.request(.discoverProviders(rootCID: "root"), on: node)
+        sim.settleLookups(on: node, answering: [asked, silent, bystander])
         guard let requestID = asked.takeFindProviders().first?.requestID else { return XCTFail("not asked") }
         XCTAssertEqual(silent.takeFindProviders().count, 1)
         XCTAssertTrue(bystander.takeFindProviders().isEmpty)
@@ -325,6 +329,7 @@ final class ProviderRecordTests: XCTestCase {
         let node = sim.node()
         let leaving = DiscoveryScriptedPeer(sim, to: node, index: 0)
         let search = sim.request(.discoverProviders(rootCID: "root"), on: node)
+        sim.settleLookups(on: node, answering: [leaving])
         XCTAssertEqual(leaving.takeFindProviders().count, 1)
 
         leaving.close()
@@ -357,6 +362,7 @@ final class ProviderRecordTests: XCTestCase {
         ]
 
         let search = sim.request(.discoverProviders(rootCID: "root"), on: node)
+        sim.settleLookups(on: node, answering: [responder])
         XCTAssertEqual(responder.answerFindProviders(records), 1)
 
         XCTAssertEqual(
@@ -366,8 +372,8 @@ final class ProviderRecordTests: XCTestCase {
         XCTAssertTrue(node.core.hasEndpointSession(responder.peer))
     }
 
-    /// With no connected peer near the root, the query first looks the root up.
-    func testQueryFallsBackToFindNodeWhenNoPeerIsConnected() {
+    /// A query first looks the root up, reaching peers it has no session with.
+    func testQueryLooksTheRootUpFirst() {
         let sim = Simulation()
         let node = sim.node()
         let holder = sim.node()
@@ -377,12 +383,13 @@ final class ProviderRecordTests: XCTestCase {
             expiresAt: sim.unixSeconds + 60)
         // A route with no session behind it: nobody to ask until the lookup connects.
         node.core.router.addPeer(holder.peer, endpoint: holder.endpoint)
-        XCTAssertTrue(node.core.providerLookupTargets(rootCID: "root").isEmpty)
+        XCTAssertFalse(node.core.hasEndpointSession(holder.peer))
 
         let search = sim.request(.discoverProviders(rootCID: "root"), on: node)
         XCTAssertEqual(node.core.lookups.count, 1)
         XCTAssertEqual(node.core.lookups.first?.value.targetHash, Router.hash("root"))
-        XCTAssertTrue(node.core.pendingProviderQueries.isEmpty)
+        XCTAssertEqual(node.core.pendingProviderQueries["root"]?.walking, true)
+        XCTAssertEqual(node.core.pendingProviderQueries["root"]?.expectedPeers, [], "nobody to ask yet")
 
         XCTAssertTrue(sim.run(until: { sim.result(of: search, on: node) != nil }, timeout: .seconds(5)))
         XCTAssertEqual(sim.result(of: search, on: node)?.endpoints, [found])
@@ -426,16 +433,84 @@ final class ProviderRecordTests: XCTestCase {
         XCTAssertTrue(holder.core.connectedPeers.isEmpty)
     }
 
-    /// At most six of the closest connected peers are asked.
-    func testAtMostSixPeersAreAsked() {
+    /// Search is one walk: every peer the walk asks for closer peers is
+    /// asked for providers in the same round, once.
+    func testEveryPeerTheWalkAsksIsAskedForProviders() {
         let sim = Simulation()
         let node = sim.node()
         let peers = (0..<9).map { DiscoveryScriptedPeer(sim, to: node, index: $0) }
 
-        _ = sim.request(.discoverProviders(rootCID: "six-root"), on: node)
+        _ = sim.request(.discoverProviders(rootCID: "walk-root"), on: node)
+        let firstRound = peers.filter { !$0.takeFindProviders().isEmpty }.map(\.key.hex)
+        XCTAssertEqual(
+            Set(firstRound),
+            Set(discoveryClosest(peers.map(\.key.hex), to: "walk-root").prefix(IvyCore.kademliaLookupParallelism)))
+        sim.settleLookups(on: node, answering: peers)
 
-        let asked = Set(peers.filter { !$0.takeFindProviders().isEmpty }.map(\.key.hex))
-        XCTAssertEqual(asked, Set(discoveryClosest(peers.map(\.key.hex), to: "six-root").prefix(6)))
+        let later = peers.filter { !$0.takeFindProviders().isEmpty }.map(\.key.hex)
+        XCTAssertEqual(Set(firstRound + later), Set(peers.map(\.key.hex)))
+        XCTAssertEqual(firstRound.count + later.count, peers.count, "each is asked once")
+        XCTAssertEqual(node.core.pendingProviderQueries["walk-root"]?.expectedPeers.count, peers.count)
+    }
+
+    /// Answers from the walk's first round, however many providers they
+    /// name, do not end it: the walk still reaches the peers nearer the root.
+    func testAFloodOfProvidersDoesNotEndTheWalk() {
+        let sim = Simulation()
+        let node = sim.discoveryNode()
+        let peers = (0..<6).map { DiscoveryScriptedPeer(sim, to: node, index: $0) }
+        let expiry = sim.unixSeconds + 60
+
+        let search = sim.request(.discoverProviders(rootCID: "flood-root"), on: node)
+        let first = peers.filter { !$0.takeFindProviders().isEmpty }
+        XCTAssertEqual(first.count, IvyCore.kademliaLookupParallelism)
+        let requestID = node.core.pendingProviderQueries["flood-root"]!.requestID
+        for (index, peer) in first.enumerated() {
+            peer.send(.providers(
+                rootCID: "flood-root", requestID: requestID,
+                records: (0..<20).map { record(provider(sim, index * 20 + $0), expiry) }))
+        }
+        XCTAssertNil(sim.result(of: search, on: node), "the walk is still running")
+        XCTAssertFalse(node.core.lookups.isEmpty)
+
+        sim.settleLookups(on: node, answering: peers)
+        let rest = peers.filter { peer in !first.contains { $0 === peer } }
+        XCTAssertTrue(rest.allSatisfy { $0.answerFindProviders([]) == 1 }, "every peer walked is asked")
+        XCTAssertNotNil(sim.result(of: search, on: node))
+    }
+
+    /// In a star, where every leaf holds a session with the hub alone, an
+    /// announcement reaches the leaves closest to the root and a search from
+    /// another leaf finds it there: neither stops at the peers it is connected to.
+    func testAnnounceAndSearchReachTheClosestPeersBeyondTheirSessions() {
+        let sim = Simulation(seed: 7)
+        let k = 3
+        let hub = sim.node(kBucketSize: k)
+        let leaves = (0..<12).map { _ in sim.node(kBucketSize: k) }
+        for leaf in leaves { sim.connect(leaf, hub) }
+        let announcer = leaves[0]
+        // Two hops reach the hub and the leaves its buckets hold.
+        let reachable = ([hub.key.hex] + hub.core.router.allPeers().map(\.id.publicKey))
+            .filter { $0 != announcer.key.hex }
+
+        // A root whose closest nodes are all leaves the announcer has never met.
+        let root = (0..<1000).map { "star-root-\($0)" }.first { root in
+            !discoveryClosest(reachable, to: root).prefix(k).contains(hub.key.hex)
+        }!
+        let closest = discoveryClosest(reachable, to: root).prefix(k)
+        let holders = leaves.filter { closest.contains($0.key.hex) }
+        XCTAssertEqual(announcer.core.connectedPeers, [hub.peer])
+
+        sim.send(.command(.announceProvider(rootCID: root, expiresAt: sim.unixSeconds + 600)), to: announcer)
+        XCTAssertTrue(sim.run(until: {
+            holders.allSatisfy { $0.core.providers(for: root).contains(announcer.peer) }
+        }, timeout: .seconds(5)))
+        XCTAssertEqual(hub.core.providers(for: root), [], "the hub is not among the closest")
+
+        let reader = leaves.first { $0.peer != announcer.peer && !closest.contains($0.key.hex) }!
+        XCTAssertEqual(reader.core.connectedPeers, [hub.peer])
+        let found = sim.await(.discoverProviders(rootCID: root), on: reader, timeout: .seconds(5))?.endpoints
+        XCTAssertEqual(found?.map(\.publicKey), [announcer.key.hex])
     }
 
     /// Fetches that find nobody each search once, and searches for one root
@@ -455,6 +530,7 @@ final class ProviderRecordTests: XCTestCase {
         XCTAssertTrue(sim.runServicing(until: {
             sim.result(of: first, on: node) != nil && sim.result(of: second, on: node) != nil
         }) {
+            responder.answerFindNodes([])
             questions += responder.answerFindProviders([])
             for request in responder.take({ message -> UInt64? in
                 if case .volumeRequest(let id, _) = message { return id } else { return nil }
@@ -490,6 +566,7 @@ final class ProviderRecordTests: XCTestCase {
         }
 
         let search = sim.request(.discoverProviders(rootCID: "root"), on: node)
+        sim.settleLookups(on: node, answering: [responder])
         XCTAssertEqual(responder.answerFindProviders(records), 1)
 
         let result = sim.result(of: search, on: node)?.endpoints ?? []
@@ -512,6 +589,7 @@ final class ProviderRecordTests: XCTestCase {
         XCTAssertEqual(node.core.providers(for: "root"), [announcer.peer])
 
         let search = sim.request(.discoverProviders(rootCID: "root"), on: node)
+        sim.settleLookups(on: node, answering: [announcer])
         XCTAssertEqual(announcer.answerFindProviders((0..<2).map { record(provider(sim, $0), expiry) }), 1)
         XCTAssertNotNil(sim.result(of: search, on: node))
 
@@ -540,6 +618,7 @@ final class ProviderRecordTests: XCTestCase {
 
         // Every record names a connected peer, so the network is asked.
         let search = sim.request(.discoverProviders(rootCID: "root"), on: node)
+        sim.settleLookups(on: node, answering: [announcer, referrer, later])
         XCTAssertEqual(referrer.answerFindProviders([record(forged, expiry + 10), record(referredRoute, expiry)]), 1)
         XCTAssertEqual(announcer.answerFindProviders([]), 1)
         XCTAssertEqual(later.answerFindProviders([]), 1)
@@ -598,6 +677,7 @@ final class ProviderRecordTests: XCTestCase {
         let now = sim.unixSeconds
         func refer(_ root: String, _ endpoint: PeerEndpoint) -> [PeerEndpoint]? {
             let search = sim.request(.discoverProviders(rootCID: root), on: node)
+            sim.settleLookups(on: node, answering: [source])
             XCTAssertEqual(source.answerFindProviders([record(endpoint, now + 60)]), 1)
             return sim.result(of: search, on: node)?.endpoints
         }
@@ -669,6 +749,7 @@ final class ProviderRecordTests: XCTestCase {
         let expiry = sim.unixSeconds + 60
         announcer.send(.announceProvider(rootCID: "root", expiresAt: expiry))
         sim.send(.command(.announceProvider(rootCID: "root", expiresAt: expiry + 5)), to: node)
+        sim.settleLookups(on: node, answering: [announcer, asker])
         _ = asker.takeAnnouncements()
 
         asker.send(.findProviders(rootCID: "root", requestID: 42))
@@ -683,5 +764,134 @@ final class ProviderRecordTests: XCTestCase {
             answers[0].records,
             [own, theirs].sorted { $0.endpoint.publicKey < $1.endpoint.publicKey })
         XCTAssertEqual(answers[1].records, [])
+    }
+}
+
+/// How far provider walks reach, what they may dial, and what an
+/// announcement does when its walk ends.
+final class ProviderWalkTests: XCTestCase {
+    private func star(_ sim: Simulation, leaves count: Int) -> (hub: Simulation.Node, leaves: [Simulation.Node]) {
+        let hub = sim.node()
+        let leaves = (0..<count).map { _ in sim.node() }
+        for leaf in leaves { sim.connect(leaf, hub) }
+        return (hub, leaves)
+    }
+
+    /// Kept among connected peers, an announcement dials no one and tells
+    /// the closest it is already connected to.
+    func testConnectedPeersReachNeverDials() {
+        let sim = Simulation(seed: 5)
+        let (hub, leaves) = star(sim, leaves: 8)
+        let node = sim.discoveryNode(providerReach: .connectedPeers)
+        sim.connect(node, hub)
+        let dialsBefore = sim.discoveryDials(by: node).count
+
+        sim.send(.command(.announceProvider(rootCID: "kept-close", expiresAt: sim.unixSeconds + 60)), to: node)
+        XCTAssertTrue(sim.run(until: { hub.core.providers(for: "kept-close") == [node.peer] }, timeout: .seconds(5)))
+
+        XCTAssertEqual(sim.discoveryDials(by: node).count, dialsBefore)
+        XCTAssertEqual(node.core.connectedPeers, [hub.peer])
+        XCTAssertTrue(leaves.allSatisfy { $0.core.providers(for: "kept-close").isEmpty })
+        XCTAssertTrue(node.core.providerWalkSessions.isEmpty)
+    }
+
+    /// A walk dials at most `maxProviderWalkSessions` peers, and the node can
+    /// tell those sessions from the ones it or its peers opened.
+    func testWalkDialsStayWithinTheirBudget() throws {
+        let sim = Simulation(seed: 5)
+        let (hub, _) = star(sim, leaves: 10)
+        let node = sim.discoveryNode(maxProviderWalkSessions: 2)
+        sim.connect(node, hub)
+
+        XCTAssertNotNil(sim.await(.discoverProviders(rootCID: "budget-root"), on: node, timeout: .seconds(5)))
+
+        XCTAssertEqual(node.core.providerWalkSessions.count, 2)
+        XCTAssertEqual(node.core.peerConnectionCount, 3)
+        let hubSession = try XCTUnwrap(node.core.authenticatedPeer(for: hub.peer))
+        XCTAssertFalse(node.core.isProviderWalkSession(hubSession))
+        for key in node.core.providerWalkSessions.keys {
+            let session = try XCTUnwrap(node.core.authenticatedPeer(for: key.peerID))
+            XCTAssertTrue(node.core.isProviderWalkSession(session))
+        }
+    }
+
+    /// A walk never dials into the slots held for outbound configured peers.
+    func testWalkDialsLeaveTheReservedSlots() {
+        let sim = Simulation(seed: 5)
+        let (hub, _) = star(sim, leaves: 10)
+        let node = sim.discoveryNode(maxConnections: 4, reservedOutboundConnectionSlots: 2)
+        sim.connect(node, hub)
+
+        XCTAssertNotNil(sim.await(.discoverProviders(rootCID: "reserved-root"), on: node, timeout: .seconds(5)))
+
+        XCTAssertEqual(node.core.peerConnectionCount, 2, "the hub and one walk dial, leaving two slots")
+        XCTAssertEqual(node.core.providerWalkSessions.count, 1)
+    }
+
+    /// Stopping a root mid-walk drops this node's record and the
+    /// announcement the walk would have sent.
+    func testStopProvidingWithdrawsAnUnsentAnnouncement() {
+        let sim = Simulation()
+        let node = sim.discoveryNode(externalAddress: ("8.44.0.1", 5000))
+        let peer = DiscoveryScriptedPeer(sim, to: node, index: 0)
+
+        sim.send(.command(.announceProvider(rootCID: "withdrawn", expiresAt: sim.unixSeconds + 60)), to: node)
+        XCTAssertEqual(node.core.providers(for: "withdrawn"), [node.peer])
+        sim.send(.command(.stopProviding(rootCID: "withdrawn")), to: node)
+        sim.settleLookups(on: node, answering: [peer])
+
+        XCTAssertTrue(peer.takeAnnouncements().isEmpty)
+        XCTAssertEqual(node.core.providers(for: "withdrawn"), [])
+        XCTAssertTrue(node.core.announceWalks.isEmpty)
+    }
+
+    /// Announcing a root again while its walk runs joins that walk, which
+    /// announces the newest expiry once.
+    func testRepeatedAnnouncementsShareOneWalk() {
+        let sim = Simulation()
+        let node = sim.discoveryNode()
+        let peer = DiscoveryScriptedPeer(sim, to: node, index: 0)
+        let expiry = sim.unixSeconds + 60
+
+        sim.send(.command(.announceProvider(rootCID: "again", expiresAt: expiry)), to: node)
+        sim.send(.command(.announceProvider(rootCID: "again", expiresAt: expiry + 30)), to: node)
+        XCTAssertEqual(node.core.lookups.count, 1)
+        sim.settleLookups(on: node, answering: [peer])
+
+        XCTAssertEqual(peer.takeAnnouncements().map(\.expiresAt), [expiry + 30])
+    }
+
+    /// When no one the walk asked answered, the closest peers already
+    /// connected are told, so the announcement is not lost.
+    func testAnAnnouncementNobodyAnsweredGoesToConnectedPeers() {
+        let sim = Simulation()
+        let node = sim.discoveryNode()
+        let silent = DiscoveryScriptedPeer(sim, to: node, index: 0)
+
+        sim.send(.command(.announceProvider(rootCID: "unanswered", expiresAt: sim.unixSeconds + 60)), to: node)
+        XCTAssertEqual(silent.takeFindNodes().count, 1)
+        sim.run(for: IvyCore.lookupResponseTimeout)
+
+        XCTAssertTrue(node.core.lookups.isEmpty)
+        XCTAssertEqual(silent.takeAnnouncements().map(\.rootCID), ["unanswered"])
+    }
+
+    /// A peer that timed out is not asked again on a route it was already
+    /// tried on, however often it is referred.
+    func testATimedOutPeerIsNotAskedAgainOnTheSameRoute() {
+        let sim = Simulation()
+        let node = sim.node()
+        let silent = DiscoveryScriptedPeer(sim, to: node, index: 0)
+        let referrer = DiscoveryScriptedPeer(sim, to: node, index: 1)
+
+        let lookup = sim.request(.findNode(target: "retry-target"), on: node)
+        XCTAssertEqual(silent.takeFindNodes().count, 1)
+        XCTAssertEqual(referrer.answerFindNodes([silent.endpoint]), 1)
+        sim.run(for: IvyCore.lookupResponseTimeout)
+        _ = referrer.answerFindNodes([silent.endpoint])
+        XCTAssertTrue(sim.run(until: { sim.result(of: lookup, on: node) != nil }, timeout: .seconds(5)))
+
+        XCTAssertTrue(silent.takeFindNodes().isEmpty)
+        XCTAssertEqual(sim.result(of: lookup, on: node)?.endpoints, [referrer.endpoint])
     }
 }

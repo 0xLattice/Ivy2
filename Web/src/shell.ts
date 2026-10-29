@@ -587,6 +587,11 @@ export class Ivy {
     this.command({ kind: 'announceProvider', rootCID, expiresAt: BigInt(expiresAt) });
   }
 
+  /// Stops announcing `rootCID`; records already sent expire on their own.
+  stopProviding(rootCID: string) {
+    this.command({ kind: 'stopProviding', rootCID });
+  }
+
   async discoverProviders(rootCID: string, options: RequestOptions = {}): Promise<PeerEndpoint[]> {
     return endpoints(await this.request({ kind: 'discoverProviders', rootCID }, options.signal));
   }

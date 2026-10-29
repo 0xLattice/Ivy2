@@ -341,6 +341,9 @@ struct CodecWriter {
             uint8(6)
             string(peer.publicKey)
             bool(relays)
+        case .stopProviding(let rootCID):
+            uint8(7)
+            string(rootCID)
         }
     }
 
@@ -744,6 +747,8 @@ struct CodecReader {
             return .setContentSource(try bool())
         case 6:
             return .setRelaying(PeerID(publicKey: try string()), try bool())
+        case 7:
+            return .stopProviding(rootCID: try string())
         default:
             throw Malformed()
         }

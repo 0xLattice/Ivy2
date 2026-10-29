@@ -505,6 +505,7 @@ extension IvyCore {
         // The application sees the session before any of its records: the
         // link stays blocked until `delivered`.
         session.didNotifyConnect = true
+        if isProviderWalkDial(pending.op) { providerWalkSessions[peerKey] = sessionID.bytes }
         session.op = pending.op
         sessions[peerKey] = session
         let token = blockForDelivery(id, connected: peerKey)
@@ -584,6 +585,7 @@ extension IvyCore {
         sessions.removeValue(forKey: key)
         sessionKeyByLink.removeValue(forKey: ref.link)
         relayingPeers.remove(key)
+        if providerWalkSessions[key] == session.sessionID.bytes { providerWalkSessions.removeValue(forKey: key) }
         if session.role == .endpoint {
             router.removePeer(key.peerID)
             cleanupPendingForPeer(key.peerID)

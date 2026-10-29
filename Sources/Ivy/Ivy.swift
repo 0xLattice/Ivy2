@@ -541,6 +541,20 @@ public actor Ivy {
         apply(.command(.announceProvider(rootCID: rootCID, expiresAt: expiresAt)))
     }
 
+    /// Stops announcing `rootCID`. Records other nodes already hold expire
+    /// at the expiry they were announced with; the wire has no withdrawal.
+    public func stopProviding(rootCID: String) {
+        apply(.command(.stopProviding(rootCID: rootCID)))
+    }
+
+    /// Whether `peer`'s session was dialed by a provider walk rather than
+    /// asked for by the application or opened by the peer. Keeping, using or
+    /// closing such a session is the application's choice;
+    /// `IvyConfig.maxProviderWalkSessions` bounds how many are open.
+    public func isProviderWalkSession(_ peer: AuthenticatedPeer) -> Bool {
+        core.isProviderWalkSession(peer)
+    }
+
     public func discoverProviders(rootCID: String) async -> [PeerEndpoint] {
         guard case .endpoints(let endpoints) = await self.await(
             .discoverProviders(rootCID: rootCID)) else { return [] }

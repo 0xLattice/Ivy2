@@ -34,6 +34,7 @@
     { "description": "command: restartConfiguredSession", "hex": "020a010000004038613838653364643734303966313935666435326462326433636261356437326361363730396266316439343132316266333734383830316234306636663563" },
     { "description": "command: broadcast", "hex": "020a0200000006676f7373697000000003090807" },
     { "description": "command: announceProvider", "hex": "020a0300000004726f6f74000000006b49d200" },
+    { "description": "command: stopProviding", "hex": "020a0700000004726f6f74" },
     { "description": "command: reportDeficientContent", "hex": "020a0400000004726f6f740000004038613838653364643734303966313935666435326462326433636261356437326361363730396266316439343132316266333734383830316234306636663563" },
     { "description": "command: setContentSource, present", "hex": "020a0501" },
     { "description": "command: setContentSource, absent", "hex": "020a0500" },

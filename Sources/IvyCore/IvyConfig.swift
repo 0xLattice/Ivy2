@@ -6,6 +6,15 @@ import Foundation
 #endif
 import Tally
 
+/// How far provider announcements and searches reach.
+public enum ProviderReach: Sendable, Equatable {
+    /// Walk toward the root's closest nodes, dialing peers not yet connected,
+    /// as Kademlia does. The default.
+    case walk
+    /// Walk only among peers already connected; never dial for a root.
+    case connectedPeers
+}
+
 public struct IvyConfig: Sendable {
     /// Default maximum wire frame this node will accept. Operator-tunable via the
     /// `protocolMaxFrameSize` instance field, and negotiated per connection (a
@@ -22,6 +31,7 @@ public struct IvyConfig: Sendable {
     public static let defaultMaxProviderTTLSeconds: UInt64 = 24 * 60 * 60
     public static let defaultMaxProviderRecordsPerPeer = 1_024
     public static let defaultMaxInFlightVolumeBytes = 128 * 1024 * 1024
+    public static let defaultMaxProviderWalkSessions = 64
     public static let defaultSTUNServers: [(String, Int)] = [
         ("stun.l.google.com", 19302),
         ("stun1.l.google.com", 19302),
@@ -69,6 +79,14 @@ public struct IvyConfig: Sendable {
     /// table holds at most `maxConnections * maxProviderRecordsPerPeer` records.
     public let maxProviderRecordsPerPeer: Int
     public let maxInFlightVolumeBytes: Int
+    /// Whether provider announcements and searches dial peers to reach a
+    /// root's closest nodes, or stay among peers already connected.
+    public let providerReach: ProviderReach
+    /// Sessions provider walks may have open at once that they dialed
+    /// themselves. A walk at the limit asks only peers already connected.
+    /// Walk dials never use `reservedOutboundConnectionSlots`. Whether to
+    /// keep such a session is the application's: `Ivy.isProviderWalkSession`.
+    public let maxProviderWalkSessions: Int
     /// Max wire frame this node will ACCEPT (inbound). Advertised in the handshake
     /// so peers cap what they send us; outbound is capped at the peer's advertised
     /// value. Operator-tunable; the default is the safe framing DoS bound.
@@ -105,6 +123,8 @@ public struct IvyConfig: Sendable {
         maxProviderTTLSeconds: UInt64 = IvyConfig.defaultMaxProviderTTLSeconds,
         maxProviderRecordsPerPeer: Int = IvyConfig.defaultMaxProviderRecordsPerPeer,
         maxInFlightVolumeBytes: Int = IvyConfig.defaultMaxInFlightVolumeBytes,
+        providerReach: ProviderReach = .walk,
+        maxProviderWalkSessions: Int = IvyConfig.defaultMaxProviderWalkSessions,
         protocolMaxFrameSize: UInt32 = IvyConfig.defaultProtocolMaxFrameSize,
         externalAddress: (host: String, port: UInt16)? = nil,
         relayEnabled: Bool = false,
@@ -142,6 +162,8 @@ public struct IvyConfig: Sendable {
         self.maxProviderTTLSeconds = maxProviderTTLSeconds
         self.maxProviderRecordsPerPeer = maxProviderRecordsPerPeer
         self.maxInFlightVolumeBytes = maxInFlightVolumeBytes
+        self.providerReach = providerReach
+        self.maxProviderWalkSessions = maxProviderWalkSessions
         self.protocolMaxFrameSize = protocolMaxFrameSize
         self.externalAddress = externalAddress
     }
@@ -158,6 +180,9 @@ public struct IvyConfig: Sendable {
         guard maxOutstandingVolumeRequestsPerPeer > 0 else {
             throw IvyModeError.invalidConfiguration(
                 "outstanding Volume requests per peer must be positive")
+        }
+        guard maxProviderWalkSessions >= 0 else {
+            throw IvyModeError.invalidConfiguration("provider walk limits are invalid")
         }
         guard (0...maxConnections).contains(reservedOutboundConnectionSlots) else {
             throw IvyModeError.invalidConfiguration(
