@@ -173,9 +173,9 @@ extension IvyCore {
 
     /// A peer's share of contended serving: 1 plus log2(1 + credit / 1 KiB),
     /// where credit is the verified content it served this node plus its
-    /// prepaid balance (`PeerLedger.servingPriority`). Logarithmic, so credit multiplies a
-    /// peer's share (1 MiB ≈ 11×, 1 GiB ≈ 21×) without reducing a peer with
-    /// no credit to a negligible one.
+    /// prepaid balance (`PeerLedger.servingPriority`). Logarithmic, so
+    /// credit multiplies a peer's share (1 MiB ≈ 11×, 1 GiB ≈ 21×) without
+    /// reducing a peer with no credit to a negligible one.
     func servingWeight(of peer: PeerID) -> Double {
         1 + log2(1 + max(0, ledger.servingPriority(for: peer)) / 1_024)
     }
