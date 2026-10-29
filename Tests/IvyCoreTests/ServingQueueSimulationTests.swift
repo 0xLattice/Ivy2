@@ -128,6 +128,45 @@ final class ServingQueueSimulationTests: XCTestCase {
         XCTAssertServingIdle(fixture.server)
     }
 
+    // bytes sent for a request that waited spend the peer's balance; one served at once is free
+    func testOnlyContendedRequestsSpendBalance() throws {
+        let fixture = ServingFixture(clients: 2, maxConcurrentContentRequests: 1)
+        for client in fixture.clients { fixture.server.ledger.setServingBalance(1_000_000, for: client.peer) }
+        let holder = fixture.fetch(0, "holder")
+        let waiter = fixture.fetch(1, "waiter")
+        XCTAssertEqual(fixture.waiting, 1)
+        fixture.open()
+        XCTAssertTrue(fixture.served(holder, 0, "holder"))
+        XCTAssertTrue(fixture.served(waiter, 1, "waiter"))
+
+        let archive = VolumeArchive.encode(
+            entries: [ContentEntry(cid: "waiter", data: Data("waiter bytes".utf8))], rootCID: "waiter")
+        let bytes = try XCTUnwrap(archive).data.count
+        XCTAssertEqual(fixture.server.ledger.servingBalance(for: fixture.clients[0].peer), 1_000_000)
+        XCTAssertEqual(fixture.server.ledger.servingBalance(for: fixture.clients[1].peer), 1_000_000 - bytes)
+        XCTAssertServingIdle(fixture.server)
+    }
+
+    // under pressure, a peer with a prepaid balance goes before one without
+    func testPrepaidPeerFirst() {
+        let fixture = ServingFixture(clients: 3, maxConcurrentContentRequests: 1)
+        fixture.server.ledger.setServingBalance(10_000, for: fixture.clients[2].peer)
+        let holder = fixture.fetch(0, "holder")
+        let stranger = fixture.fetch(1, "stranger")
+        let payer = fixture.fetch(2, "payer")
+        XCTAssertEqual(fixture.waiting, 2)
+
+        fixture.sim.releaseNextRead(fixture.server)
+        XCTAssertEqual(fixture.server.volumeReads, ["holder", "payer"])
+        fixture.open()
+        XCTAssertEqual(fixture.server.volumeReads, ["holder", "payer", "stranger"])
+        XCTAssertTrue(fixture.served(holder, 0, "holder"))
+        XCTAssertTrue(fixture.served(payer, 2, "payer"))
+        XCTAssertTrue(fixture.served(stranger, 1, "stranger"))
+        XCTAssertLessThan(fixture.server.ledger.servingBalance(for: fixture.clients[2].peer), 10_000)
+        XCTAssertServingIdle(fixture.server)
+    }
+
     // among equally helpful peers, the oldest waiter goes first
     func testEqualPriorityIsFIFO() {
         let fixture = ServingFixture(clients: 3, maxConcurrentContentRequests: 1)
