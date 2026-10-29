@@ -219,10 +219,13 @@ extension IvyCore {
         var accepted: [ProviderHint] = []
         for record in records.prefix(Int(MessageLimits.maxNeighborCount)) {
             let endpoint = record.endpoint
+            // A record naming the peer that answers is its own advertisement,
+            // as when it announces: a private address it is seen from holds.
+            let names = (try? PeerKey(endpoint.publicKey))?.hex == peer.publicKey
             guard providerExpiryIsValid(record.expiresAt),
                   isAcceptableDiscoveredEndpoint(
                     endpoint,
-                    provenance: .referral("provider"),
+                    provenance: names ? .selfAdvertisement : .referral("provider"),
                     from: peer),
                   let key = try? PeerKey(endpoint.publicKey) else { continue }
             let canonical = PeerEndpoint(
