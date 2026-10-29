@@ -86,7 +86,7 @@ contract for whoever plays the shell:
   node.
 - Tally keeps its own clock. The core reaches it through `PeerLedger`, and
   reads only `servingPriority`; a simulation supplies its own ledger.
-  Bytes served on a contended request are reported through
-  `recordContendedSent`, which spends the peer's prepaid balance.
+  Every Volume chunk served is reported through `recordServed`, which
+  debits the peer's standing by its archive bytes.
 - Signing and verification run inside the step, as they did on the actor.
 - Throughput is measured only by `ThroughputTests`, not against 15.0.1.

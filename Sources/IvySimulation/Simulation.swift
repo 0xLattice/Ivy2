@@ -39,12 +39,12 @@ public struct SimulatedSignatureScheme: IvySignatureScheme {
     }
 }
 
-/// Serving credit and prepaid balance a test sets by hand; contended
-/// sends spend the balance, as Tally's does. Like the simulation, it is
+/// Serving priority and standing a test sets by hand; served Volume bytes
+/// debit the standing, as Tally's does. Like the simulation, it is
 /// used from one thread.
 public final class SimulatedLedger: PeerLedger, @unchecked Sendable {
     private var credit: [PeerID: Double] = [:]
-    private var balances: [PeerID: Int] = [:]
+    private var standings: [PeerID: Int] = [:]
     private var violationCounts: [PeerID: Int] = [:]
 
     public init() {}
@@ -53,12 +53,12 @@ public final class SimulatedLedger: PeerLedger, @unchecked Sendable {
         credit[peer] = value
     }
 
-    public func setServingBalance(_ bytes: Int, for peer: PeerID) {
-        balances[peer] = bytes
+    public func setStanding(_ bytes: Int, for peer: PeerID) {
+        standings[peer] = bytes
     }
 
-    public func servingBalance(for peer: PeerID) -> Int {
-        balances[peer] ?? 0
+    public func standing(for peer: PeerID) -> Int {
+        standings[peer] ?? 0
     }
 
     public func violations(of peer: PeerID) -> Int {
@@ -73,11 +73,12 @@ public final class SimulatedLedger: PeerLedger, @unchecked Sendable {
     }
 
     public func servingPriority(for peer: PeerID) -> Double {
-        (credit[peer] ?? 0) + Double(balances[peer] ?? 0)
+        (credit[peer] ?? 0) + Double(standings[peer] ?? 0)
     }
 
-    public func recordContendedSent(peer: PeerID, bytes: Int) {
-        balances[peer] = max(0, (balances[peer] ?? 0) - bytes)
+    public func recordServed(peer: PeerID, bytes: Int) {
+        guard bytes > 0, let current = standings[peer] else { return }
+        standings[peer] = current > bytes ? current - bytes : nil
     }
 }
 

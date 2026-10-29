@@ -3,16 +3,16 @@ import XCTest
 import Tally
 
 final class TallyLedgerTests: XCTestCase {
-    // contended sends spend the Tally's prepaid balance, which serving priority includes
-    func testContendedSentSpendsBalance() {
+    // served bytes debit the Tally's standing, which is the serving priority
+    func testServedDebitsStanding() {
         let tally = Tally()
         let ledger = TallyLedger(tally: tally)
         let peer = PeerID(publicKey: "payer")
-        tally.creditServingBalance(peer: peer, bytes: 1_000)
+        tally.creditStanding(peer: peer, bytes: 1_000)
         XCTAssertEqual(ledger.servingPriority(for: peer), 1_000)
-        ledger.recordContendedSent(peer: peer, bytes: 400)
-        XCTAssertEqual(tally.servingBalance(for: peer), 600)
+        ledger.recordServed(peer: peer, bytes: 400)
+        XCTAssertEqual(tally.standing(for: peer), 600)
         ledger.recordSent(peer: peer, bytes: 400)
-        XCTAssertEqual(tally.servingBalance(for: peer), 600)
+        XCTAssertEqual(tally.standing(for: peer), 600)
     }
 }
