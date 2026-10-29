@@ -259,6 +259,13 @@ public protocol PeerLedger: Sendable {
     func recordReceived(peer: PeerID, bytes: Int)
     func recordProtocolViolation(peer: PeerID)
     func servingPriority(for peer: PeerID) -> Double
+    /// Volume bytes sent to `peer` for a request that waited for its
+    /// serving slot. A request served at once never reports here.
+    func recordContendedSent(peer: PeerID, bytes: Int)
+}
+
+extension PeerLedger {
+    public func recordContendedSent(peer: PeerID, bytes: Int) {}
 }
 
 public struct NullLedger: PeerLedger {

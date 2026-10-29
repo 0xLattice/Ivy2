@@ -224,10 +224,12 @@ bound exhaustion close it.
 Ivy serves any authenticated peer and never rate-limits its own requests.
 Tally records peer-global traffic evidence and compares peers only when
 content requests wait for a serving slot: waiting peers share freed slots in
-proportion to the verified content they served this node, and a peer with no
-history still advances. Ivy does not evict an authenticated connection by
-score. Evidence decays, and application content deficiency remains root-scoped
-rather than becoming global blame.
+proportion to the verified content they served this node plus any prepaid
+balance, and a peer with neither still advances. Bytes sent for a request that
+waited spend the peer's prepaid balance; a request served at once is free. Ivy
+does not evict an authenticated connection by score. Evidence decays, and
+application content deficiency remains root-scoped rather than becoming global
+blame.
 
 ## Application protocols
 
