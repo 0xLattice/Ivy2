@@ -372,6 +372,28 @@ final class ProviderRecordTests: XCTestCase {
         XCTAssertTrue(node.core.hasEndpointSession(responder.peer))
     }
 
+    /// A peer answering with its own record at the private address it is
+    /// seen from is kept, as its announcement would be; at another private
+    /// address, or naming someone else at one, it is not.
+    func testAnAnswerNamingItsResponderKeepsTheAddressItIsSeenFrom() {
+        let sim = Simulation()
+        let node = sim.discoveryNode()
+        let responder = DiscoveryScriptedPeer(sim, to: node, index: 0, host: "10.0.0.7")
+        let now = sim.unixSeconds
+        let own = PeerEndpoint(publicKey: responder.key.hex, host: "10.0.0.7", port: 4001)
+        let records = [
+            record(own, now + 60),
+            record(PeerEndpoint(publicKey: responder.key.hex, host: "10.0.0.8", port: 4001), now + 60),
+            record(PeerEndpoint(publicKey: sim.discoveryKey(index: 1).hex, host: "10.0.0.7", port: 4001), now + 60),
+        ]
+
+        let search = sim.request(.discoverProviders(rootCID: "lan-root"), on: node)
+        sim.settleLookups(on: node, answering: [responder])
+        XCTAssertEqual(responder.answerFindProviders(records), 1)
+
+        XCTAssertEqual(sim.result(of: search, on: node)?.endpoints, [own])
+    }
+
     /// A query first looks the root up, reaching peers it has no session with.
     func testQueryLooksTheRootUpFirst() {
         let sim = Simulation()
