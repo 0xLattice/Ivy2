@@ -128,10 +128,10 @@ final class ServingQueueSimulationTests: XCTestCase {
         XCTAssertServingIdle(fixture.server)
     }
 
-    // bytes sent for a request that waited spend the peer's balance; one served at once is free
-    func testOnlyContendedRequestsSpendBalance() throws {
+    // every served request debits the peer's standing by its archive bytes, contended or not
+    func testServedRequestsDebitStanding() throws {
         let fixture = ServingFixture(clients: 2, maxConcurrentContentRequests: 1)
-        for client in fixture.clients { fixture.server.ledger.setServingBalance(1_000_000, for: client.peer) }
+        for client in fixture.clients { fixture.server.ledger.setStanding(1_000_000, for: client.peer) }
         let holder = fixture.fetch(0, "holder")
         let waiter = fixture.fetch(1, "waiter")
         XCTAssertEqual(fixture.waiting, 1)
@@ -139,18 +139,19 @@ final class ServingQueueSimulationTests: XCTestCase {
         XCTAssertTrue(fixture.served(holder, 0, "holder"))
         XCTAssertTrue(fixture.served(waiter, 1, "waiter"))
 
-        let archive = VolumeArchive.encode(
-            entries: [ContentEntry(cid: "waiter", data: Data("waiter bytes".utf8))], rootCID: "waiter")
-        let bytes = try XCTUnwrap(archive).data.count
-        XCTAssertEqual(fixture.server.ledger.servingBalance(for: fixture.clients[0].peer), 1_000_000)
-        XCTAssertEqual(fixture.server.ledger.servingBalance(for: fixture.clients[1].peer), 1_000_000 - bytes)
+        func archiveBytes(_ cid: String) throws -> Int {
+            try XCTUnwrap(VolumeArchive.encode(
+                entries: [ContentEntry(cid: cid, data: Data("\(cid) bytes".utf8))], rootCID: cid)).data.count
+        }
+        XCTAssertEqual(fixture.server.ledger.standing(for: fixture.clients[0].peer), 1_000_000 - (try archiveBytes("holder")))
+        XCTAssertEqual(fixture.server.ledger.standing(for: fixture.clients[1].peer), 1_000_000 - (try archiveBytes("waiter")))
         XCTAssertServingIdle(fixture.server)
     }
 
-    // under pressure, a peer with a prepaid balance goes before one without
-    func testPrepaidPeerFirst() {
+    // under pressure, a peer with standing goes before one without
+    func testPeerWithStandingFirst() {
         let fixture = ServingFixture(clients: 3, maxConcurrentContentRequests: 1)
-        fixture.server.ledger.setServingBalance(10_000, for: fixture.clients[2].peer)
+        fixture.server.ledger.setStanding(10_000, for: fixture.clients[2].peer)
         let holder = fixture.fetch(0, "holder")
         let stranger = fixture.fetch(1, "stranger")
         let payer = fixture.fetch(2, "payer")
@@ -163,7 +164,7 @@ final class ServingQueueSimulationTests: XCTestCase {
         XCTAssertTrue(fixture.served(holder, 0, "holder"))
         XCTAssertTrue(fixture.served(payer, 2, "payer"))
         XCTAssertTrue(fixture.served(stranger, 1, "stranger"))
-        XCTAssertLessThan(fixture.server.ledger.servingBalance(for: fixture.clients[2].peer), 10_000)
+        XCTAssertLessThan(fixture.server.ledger.standing(for: fixture.clients[2].peer), 10_000)
         XCTAssertServingIdle(fixture.server)
     }
 

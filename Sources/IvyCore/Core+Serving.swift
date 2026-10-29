@@ -104,9 +104,6 @@ struct ServingRequest: Sendable {
     var phase: Phase = .waitingSlot
     /// The deadline passed while a job was out; the request ends when it exits.
     var timedOut = false
-    /// Its current slot came from the wait queue, so what it sends is
-    /// reported as contended (`PeerLedger.recordContendedSent`).
-    var contended = false
 
     // A bundle's Volumes, the root's own first.
     var bundleRoots: [String]?
@@ -171,11 +168,12 @@ extension IvyCore {
 
     // MARK: - The serving queue
 
-    /// A peer's share of contended serving: 1 plus log2(1 + credit / 1 KiB),
-    /// where credit is the verified content it served this node plus its
-    /// prepaid balance (`PeerLedger.servingPriority`). Logarithmic, so
-    /// credit multiplies a peer's share (1 MiB ≈ 11×, 1 GiB ≈ 21×) without
-    /// reducing a peer with no credit to a negligible one.
+    /// A peer's share of contended serving: 1 plus log2(1 + standing / 1 KiB),
+    /// where standing is the bytes the peer paid for or served this node
+    /// verified, less the Volume bytes this node served it
+    /// (`PeerLedger.servingPriority`). Logarithmic, so standing multiplies a
+    /// peer's share (1 MiB ≈ 11×, 1 GiB ≈ 21×) without reducing a peer with
+    /// none to a negligible one.
     func servingWeight(of peer: PeerID) -> Double {
         1 + log2(1 + max(0, ledger.servingPriority(for: peer)) / 1_024)
     }
@@ -191,19 +189,17 @@ extension IvyCore {
     /// With a free slot and nobody waiting, the request is served at once in
     /// arrival order, whoever asks: one peer alone may hold every slot. Under
     /// pressure it waits, and freed slots are shared among the waiting peers
-    /// in proportion to their weight (see `servingWeight`): peers that served
-    /// this node verified content get proportionally more, and a peer with no
-    /// credit, such as a node syncing from scratch, always advances. A
+    /// in proportion to their weight (see `servingWeight`): peers with standing
+    /// get proportionally more, and a peer with none, such as a node syncing
+    /// from scratch, always advances. A
     /// request is never refused for load, and `requestTimeout` does not run
     /// while it waits. Local reads take any free slot without queueing: the
     /// node's own needs come first.
     private mutating func takeServingSlotOrWait(_ request: InboundContentRequest) -> Bool {
         if servingTickets.isEmpty, hasFreeServingSlot {
             servingContentRequests.insert(request)
-            serving[request]?.contended = false
             return true
         }
-        serving[request]?.contended = true
         nextServingTicketArrival &+= 1
         servingTickets[request] = nextServingTicketArrival
         // Stride scheduling: a peer that starts waiting begins one stride
@@ -422,7 +418,7 @@ extension IvyCore {
                 payload: Data(entry.archive[(base + start)..<(base + end)]))
             switch enqueue(chunk, on: entry.ref) {
             case .enqueued:
-                if entry.contended { ledger.recordContendedSent(peer: request.peer, bytes: end - start) }
+                ledger.recordServed(peer: request.peer, bytes: end - start)
                 serving[request]?.chunkIndex += 1
             case .backpressured:
                 guard awaitWritable(entry.ref.link, .serving(request)) else {

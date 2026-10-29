@@ -12,7 +12,7 @@ struct TallyLedger: PeerLedger {
     func recordReceived(peer: PeerID, bytes: Int) { tally.recordReceived(peer: peer, bytes: bytes) }
     func recordProtocolViolation(peer: PeerID) { tally.recordProtocolViolation(peer: peer) }
     func servingPriority(for peer: PeerID) -> Double { tally.servingPriority(for: peer) }
-    func recordContendedSent(peer: PeerID, bytes: Int) { tally.spendServingBalance(peer: peer, bytes: bytes) }
+    func recordServed(peer: PeerID, bytes: Int) { tally.debitStanding(peer: peer, bytes: bytes) }
 }
 
 /// Ivy for an application: the shell around `IvyCore`. It owns the sockets,
