@@ -349,6 +349,77 @@ struct SessionDataRecord: Sendable, Equatable {
     }
 }
 
+/// The two directions' record MAC keys, from both sides' X25519 shares. The
+/// shares travel in signed records, which bind them to the session and to
+/// both identities, so only the two peers can derive these keys, and the
+/// key for each direction is distinct: a record cannot be reflected.
+struct SessionMACKeys: Sendable {
+    let send: SymmetricKey
+    let receive: SymmetricKey
+
+    /// Nil when the peer's share yields no usable secret; the session then
+    /// stays signed.
+    init?(
+        localShare: Curve25519.KeyAgreement.PrivateKey,
+        remoteShare: Data,
+        sessionID: SessionID,
+        localKey: PeerKey,
+        remoteKey: PeerKey
+    ) {
+        guard let remote = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: remoteShare),
+              let secret = try? localShare.sharedSecretFromKeyAgreement(with: remote),
+              // A low-order share gives the all-zero secret, known to anyone.
+              secret.withUnsafeBytes({ $0.contains { $0 != 0 } }) else { return nil }
+        let localPublic = localShare.publicKey.rawRepresentation
+        func key(sender: PeerKey, receiver: PeerKey, senderShare: Data, receiverShare: Data) -> SymmetricKey {
+            var info = SessionDomains.mac
+            info.append(sender.rawRepresentation)
+            info.append(receiver.rawRepresentation)
+            info.append(senderShare)
+            info.append(receiverShare)
+            return secret.hkdfDerivedSymmetricKey(
+                using: SHA256.self, salt: sessionID.bytes, sharedInfo: info, outputByteCount: 32)
+        }
+        send = key(sender: localKey, receiver: remoteKey, senderShare: localPublic, receiverShare: remoteShare)
+        receive = key(sender: remoteKey, receiver: localKey, senderShare: remoteShare, receiverShare: localPublic)
+    }
+}
+
+/// A data record authenticated by the session's MAC instead of a signature.
+struct SessionMACRecord: Sendable, Equatable {
+    let sessionID: SessionID
+    let sequence: UInt64
+    let payload: Data
+    let mac: Data
+
+    static func seal(sessionID: SessionID, sequence: UInt64, payload: Data, key: SymmetricKey) throws -> Self {
+        guard sequence > 0 else { throw SessionProtocolError.malformed }
+        return Self(
+            sessionID: sessionID,
+            sequence: sequence,
+            payload: payload,
+            mac: Data(code(sessionID: sessionID, sequence: sequence, payload: payload, key: key)))
+    }
+
+    func isValid(key: SymmetricKey) -> Bool {
+        guard sequence > 0, mac.count == 32 else { return false }
+        // Constant-time comparison.
+        return Self.code(sessionID: sessionID, sequence: sequence, payload: payload, key: key) == mac
+    }
+
+    private static func code(
+        sessionID: SessionID, sequence: UInt64, payload: Data, key: SymmetricKey
+    ) -> HMAC<SHA256>.MAC {
+        var header = SessionDomains.mac
+        header.append(sessionID.bytes)
+        header.appendUInt64(sequence)
+        var hmac = HMAC<SHA256>(key: key)
+        hmac.update(data: header)
+        hmac.update(data: payload)
+        return hmac.finalize()
+    }
+}
+
 struct SessionSequenceState: Sendable, Equatable {
     private(set) var nextToSend: UInt64
     private(set) var lastReceived: UInt64
@@ -384,6 +455,8 @@ struct SessionSequenceState: Sendable, Equatable {
 
 enum SessionWireRecord: Sendable, Equatable {
     private static let magic = Data([0x49, 0x56, 0x59, 0x09])
+    /// Bounds both data records: a MAC record's 32-byte code is smaller
+    /// than a signature.
     static let dataRecordOverhead = magic.count + 1 + 32 + 8 + 4 + 64
     /// Envelope bytes wrapping a signed hello: magic + tag + the 4-byte
     /// length prefix `appendSessionData` writes + the 64-byte signature.
@@ -408,6 +481,7 @@ enum SessionWireRecord: Sendable, Equatable {
     case helloResponder(SignedSessionHelloResponder)
     case finish(SessionFinish)
     case data(SessionDataRecord)
+    case macData(SessionMACRecord)
 
     func serialize(maxPayload: UInt32 = IvyConfig.defaultProtocolMaxFrameSize) -> Data {
         var bytes = Self.magic
@@ -436,6 +510,13 @@ enum SessionWireRecord: Sendable, Equatable {
             bytes.appendUInt64(record.sequence)
             guard bytes.appendSessionData(record.payload) else { return Data() }
             bytes.append(record.signature)
+        case .macData(let record):
+            guard record.payload.count <= Int(clamping: maxPayload), record.mac.count == 32 else { return Data() }
+            bytes.appendUInt8(5)
+            bytes.append(record.sessionID.bytes)
+            bytes.appendUInt64(record.sequence)
+            guard bytes.appendSessionData(record.payload) else { return Data() }
+            bytes.append(record.mac)
         }
         return bytes.count <= Int(clamping: maxPayload) ? bytes : Data()
     }
@@ -488,6 +569,18 @@ enum SessionWireRecord: Sendable, Equatable {
                 sequence: sequence,
                 payload: payload,
                 signature: signature))
+        case 5:
+            guard let sidBytes = reader.read(count: 32),
+                  let sequence = reader.readUInt64(), sequence > 0,
+                  let payload = reader.readData(max: Int(clamping: maxPayload)),
+                  let mac = reader.read(count: 32), reader.isAtEnd else {
+                throw SessionProtocolError.malformed
+            }
+            return .macData(SessionMACRecord(
+                sessionID: try SessionID(bytes: sidBytes),
+                sequence: sequence,
+                payload: payload,
+                mac: mac))
         default:
             throw SessionProtocolError.malformed
         }
@@ -499,6 +592,7 @@ private enum SessionDomains {
     static let transcript = lengthPrefixed("ivy.session.transcript.v1")
     static let finish = lengthPrefixed("ivy.session.finish.v1")
     static let data = lengthPrefixed("ivy.session.data.v1")
+    static let mac = lengthPrefixed("ivy.session.mac.v1")
 
     private static func lengthPrefixed(_ string: String) -> Data {
         var bytes = Data()

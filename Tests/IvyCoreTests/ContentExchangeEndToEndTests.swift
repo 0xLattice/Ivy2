@@ -299,6 +299,8 @@ final class ContentExchangeEndToEndTests: XCTestCase {
         requester.send(.volumeRequest(requestID: 7, rootCID: "root"))
         XCTAssertEqual(server.startedJobs.count, 1)
         let oldConnection = requester.connection
+        // So far the node has written only its MAC key share there.
+        _ = sim.takeRawOutput(oldConnection)
 
         requester.replaceSession()
         XCTAssertTrue(sim.nodeClosedRaw(oldConnection))

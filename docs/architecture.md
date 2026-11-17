@@ -156,8 +156,22 @@ finish.
 
 Application records bind sender, receiver, session ID, sequence, and payload.
 Receive sequences strictly increase. Simultaneous sessions for one peer and
-role converge on the smaller session ID. Records are signed but not encrypted;
-confidentiality and forward secrecy belong above or below Ivy.
+role converge on the smaller session ID. Records are authenticated but not
+encrypted; confidentiality belongs above or below Ivy.
+
+A record is signed with the sender's identity key until both sides have
+exchanged X25519 shares, as TLS 1.3 does: each side sends a `sessionKey`
+message as its first record, signed like any other, so the share is bound to
+the session ID and both identities. A side that has sent its share and
+received the peer's derives one HMAC-SHA256 key per direction (HKDF-SHA256,
+the session ID as salt, both identities and both shares as info), drops its
+private share, and from then on sends MACed records: the same fields, a
+32-byte MAC in place of the signature. Signed records stay accepted on every
+session, so a peer's records in flight across the switch, and every record
+of a peer that sends no share, still verify. One sequence counts both kinds.
+A peer that sends no share keeps the session signed; `sessionKey` is the one
+message Ivy sends to every session unasked, since every v9 peer from 14.1.0
+on ignores a tag it does not know.
 
 Wire/session protocol v9 rejects v8 during authentication. V9 introduces
 multi-frame complete-Volume replies, which cannot safely share the older
@@ -178,7 +192,7 @@ Everything else is an addition, and an addition needs no version:
   does not decode still ends the session as a signed protocol violation.
 
 An ignored message costs what any message costs before it is understood: its
-signature and sequence are checked and its bytes counted as received. It is
+signature or MAC and its sequence are checked and its bytes counted as received. It is
 bounded as every message is, by the negotiated frame size and the inbound
 byte budget, and it is cheaper than a known message nobody wanted. Peers that
 predate this rule (through 14.0.0) end the session on an unknown tag, which is
@@ -365,7 +379,9 @@ see: to it, that node is one more peer to query and gossip to. So a node takes
 only keepalives and relay control from a configured carrier and drops whatever
 else it sends, without ending the session or blaming it.
 
-Ivy attributes a violation only after verifying the charged peer's signature.
+Ivy attributes a violation only after verifying the charged peer's signature,
+or the session MAC for the peer's direction, which only the two ends hold and
+only the peer uses.
 Signed malformed endpoint payloads remain attributable through relay. Unsigned
 bytes are unattributed, and relay-controlled replay or sequence failure is
 ambiguous because a carrier can replay a valid record.

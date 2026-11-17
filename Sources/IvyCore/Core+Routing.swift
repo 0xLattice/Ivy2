@@ -86,7 +86,7 @@ extension IvyCore {
         case .ping(let nonce):
             fireToPeer(peer, .pong(nonce: nonce))
 
-        case .pong, .relayOpen, .relayOffer, .relayAccept, .relayReady, .relayPacket, .relayClose:
+        case .pong, .sessionKey, .relayOpen, .relayOffer, .relayAccept, .relayReady, .relayPacket, .relayClose:
             return
 
         case .findNode(let target, let nonce):

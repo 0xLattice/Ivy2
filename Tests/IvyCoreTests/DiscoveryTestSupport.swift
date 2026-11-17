@@ -86,7 +86,7 @@ final class DiscoveryScriptedPeer {
             guard unparsed.count >= 4 + length else { break }
             let body = Data(unparsed.dropFirst(4).prefix(length))
             unparsed = Data(unparsed.dropFirst(4 + length))
-            if let record = try? SessionWireRecord.deserialize(body) { records.append(record) }
+            if let record = try? SessionWireRecord.deserialize(body), !record.isSessionKeyOffer { records.append(record) }
         }
         return records
     }

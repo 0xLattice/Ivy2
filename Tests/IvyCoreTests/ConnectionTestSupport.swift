@@ -154,7 +154,7 @@ final class HandPeer {
             guard undecoded.count >= 4 + length else { break }
             let body = Data(undecoded.dropFirst(4).prefix(length))
             undecoded = Data(undecoded.dropFirst(4 + length))
-            if let record = try? SessionWireRecord.deserialize(body, maxPayload: .max) {
+            if let record = try? SessionWireRecord.deserialize(body, maxPayload: .max), !record.isSessionKeyOffer {
                 records.append(record)
             }
         }

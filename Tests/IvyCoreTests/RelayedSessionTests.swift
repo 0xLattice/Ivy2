@@ -251,11 +251,13 @@ final class RelayedSessionTests: XCTestCase {
         sim.connectRelayed(a, b)
 
         // tag + topic + payload length, then the endpoint's record, the
-        // carrier's envelope and the carrier's record.
+        // carrier's envelope and the carrier's record. Both sessions have
+        // their MAC keys, and a 32-byte MAC is half a signature.
         let topic = "t"
         let messageOverhead = 1 + 2 + topic.utf8.count + 4
+        let macRecordOverhead = SessionWireRecord.dataRecordOverhead - 32
         let largest = Int(smallFrame)
-            - 2 * SessionWireRecord.dataRecordOverhead
+            - 2 * macRecordOverhead
             - Message.relayPacketEnvelopeOverhead
             - messageOverhead
         XCTAssertEqual(

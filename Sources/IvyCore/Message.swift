@@ -24,6 +24,9 @@ enum Message: Sendable {
     case pong(nonce: UInt64)
     case findNode(target: Data, nonce: UInt64 = 0)
     case neighbors([PeerEndpoint], nonce: UInt64 = 0)
+    /// This side's X25519 share for the session's record MAC keys. A peer
+    /// that does not know it ignores it, and the session stays signed.
+    case sessionKey(Data)
 
     case contentUnavailable(requestID: UInt64)
     case volumeRequest(requestID: UInt64, rootCID: String)
@@ -68,6 +71,7 @@ enum Message: Sendable {
         case pong = 1
         case findNode = 5
         case neighbors = 6
+        case sessionKey = 7
         case volumeRequest = 27
         case volumeChunk = 28
         case volumeBundleRequest = 29
@@ -150,6 +154,10 @@ enum Message: Sendable {
             bytes.append(Tag.neighbors.rawValue)
             guard bytes.appendEndpoints(peers) else { return false }
             bytes.appendUInt64(nonce)
+        case .sessionKey(let share):
+            guard share.count == 32 else { return false }
+            bytes.append(Tag.sessionKey.rawValue)
+            bytes.append(share)
         case .contentUnavailable(let requestID):
             guard requestID != 0 else { return false }
             bytes.append(Tag.contentUnavailable.rawValue)
@@ -288,6 +296,9 @@ enum Message: Sendable {
         case .neighbors:
             guard let peers = reader.readEndpoints(), let nonce = reader.readUInt64() else { return nil }
             return .neighbors(peers, nonce: nonce)
+        case .sessionKey:
+            guard let share = reader.readFixedData(count: 32) else { return nil }
+            return .sessionKey(share)
         case .contentUnavailable:
             guard let requestID = reader.readUInt64(), requestID != 0 else { return nil }
             return .contentUnavailable(requestID: requestID)

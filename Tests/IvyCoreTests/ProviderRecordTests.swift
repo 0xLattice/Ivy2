@@ -782,8 +782,9 @@ final class ProviderRecordTests: XCTestCase {
         XCTAssertEqual(answers.map(\.rootCID), ["root", "unknown-root"])
         let own = record(PeerEndpoint(publicKey: node.key.hex, host: "8.44.0.1", port: 5000), expiry + 5)
         let theirs = record(announcer.endpoint, expiry)
+        // The identities come in a random order.
         XCTAssertEqual(
-            answers[0].records,
+            answers[0].records.sorted { $0.endpoint.publicKey < $1.endpoint.publicKey },
             [own, theirs].sorted { $0.endpoint.publicKey < $1.endpoint.publicKey })
         XCTAssertEqual(answers[1].records, [])
     }
