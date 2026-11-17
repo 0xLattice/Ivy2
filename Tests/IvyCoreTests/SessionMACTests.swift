@@ -319,6 +319,19 @@ final class SessionMACTests: XCTestCase {
         assertEnded(peer, at: node)
     }
 
+    func testAMalformedMACedMessageIsChargedToThePeer() {
+        // Only the two ends hold the peer's direction key, and the node never
+        // MACs with it, so a valid MAC is the peer's word, as a signature is.
+        let sim = Simulation()
+        let node = sim.node()
+        let peer = macPeer(sim, node)
+        // A ping without its nonce: a known tag that does not decode.
+        peer.write(peer.macRecord(payload: Data([0])))
+        sim.run(for: .milliseconds(10))
+        XCTAssertNil(node.core.sessions[peer.key])
+        XCTAssertEqual(node.ledger.violations(of: peer.id), 1)
+    }
+
     func testAMACedRecordBeforeTheKeysEndsTheSession() {
         let sim = Simulation()
         let node = sim.node()
