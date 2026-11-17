@@ -39,6 +39,28 @@ jobs:
           echo "$first"; echo "$second"
           test -n "$first" && test "$first" = "$second"
 
+  oldest:
+    # The oldest toolchain and swift-crypto line this package accepts, as a
+    # dependent resolves them (lattice-node: swift:6.1, swift-crypto 3.x).
+    # Key types that are Sendable in swift-crypto 4 are not in 3.
+    runs-on: ubuntu-latest
+    container: swift:6.1-jammy
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve swift-crypto on its 3.x line
+        run: |
+          sed -i 's/"3.0.0"..<"6.0.0"/"3.0.0"..<"4.0.0"/' Package.swift
+          grep -q '"3.0.0"..<"4.0.0"' Package.swift
+          rm -f Package.resolved
+      - run: swift --version
+      - run: swift build --build-tests
+      - run: swift build -c release
+      # The UTF-8 check is compared with Foundation, and Foundation on 6.1
+      # Linux drops a leading byte order mark; Ivy keeps it, as Foundation
+      # does on macOS and in later toolchains.
+      - run: swift test --skip-build --skip TextTests.testUTF8ValidationMatchesFoundation
+
   wasm:
     runs-on: ubuntu-latest
     # The Wasm SDK must match the toolchain exactly.

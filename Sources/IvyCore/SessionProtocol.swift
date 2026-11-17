@@ -353,9 +353,14 @@ struct SessionDataRecord: Sendable, Equatable {
 /// shares travel in signed records, which bind them to the session and to
 /// both identities, so only the two peers can derive these keys, and the
 /// key for each direction is distinct: a record cannot be reflected.
+///
+/// The keys are kept as bytes: swift-crypto's key types are not Sendable in
+/// every version this package accepts.
 struct SessionMACKeys: Sendable {
-    let send: SymmetricKey
-    let receive: SymmetricKey
+    private let sendBytes: Data
+    private let receiveBytes: Data
+    var send: SymmetricKey { SymmetricKey(data: sendBytes) }
+    var receive: SymmetricKey { SymmetricKey(data: receiveBytes) }
 
     /// Nil when the peer's share yields no usable secret; the session then
     /// stays signed.
@@ -371,17 +376,18 @@ struct SessionMACKeys: Sendable {
               // A low-order share gives the all-zero secret, known to anyone.
               secret.withUnsafeBytes({ $0.reduce(0, |) }) != 0 else { return nil }
         let localPublic = localShare.publicKey.rawRepresentation
-        func key(sender: PeerKey, receiver: PeerKey, senderShare: Data, receiverShare: Data) -> SymmetricKey {
+        func key(sender: PeerKey, receiver: PeerKey, senderShare: Data, receiverShare: Data) -> Data {
             var info = SessionDomains.mac
             info.append(sender.rawRepresentation)
             info.append(receiver.rawRepresentation)
             info.append(senderShare)
             info.append(receiverShare)
             return secret.hkdfDerivedSymmetricKey(
-                using: SHA256.self, salt: sessionID.bytes, sharedInfo: info, outputByteCount: 32)
+                using: SHA256.self, salt: sessionID.bytes, sharedInfo: info, outputByteCount: 32
+            ).withUnsafeBytes { Data($0) }
         }
-        send = key(sender: localKey, receiver: remoteKey, senderShare: localPublic, receiverShare: remoteShare)
-        receive = key(sender: remoteKey, receiver: localKey, senderShare: remoteShare, receiverShare: localPublic)
+        sendBytes = key(sender: localKey, receiver: remoteKey, senderShare: localPublic, receiverShare: remoteShare)
+        receiveBytes = key(sender: remoteKey, receiver: localKey, senderShare: remoteShare, receiverShare: localPublic)
     }
 }
 
