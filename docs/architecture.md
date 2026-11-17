@@ -160,18 +160,29 @@ role converge on the smaller session ID. Records are authenticated but not
 encrypted; confidentiality belongs above or below Ivy.
 
 A record is signed with the sender's identity key until both sides have
-exchanged X25519 shares, as TLS 1.3 does: each side sends a `sessionKey`
-message as its first record, signed like any other, so the share is bound to
-the session ID and both identities. A side that has sent its share and
-received the peer's derives one HMAC-SHA256 key per direction (HKDF-SHA256,
-the session ID as salt, both identities and both shares as info), drops its
-private share, and from then on sends MACed records: the same fields, a
-32-byte MAC in place of the signature. Signed records stay accepted on every
-session, so a peer's records in flight across the switch, and every record
-of a peer that sends no share, still verify. One sequence counts both kinds.
-A MAC record is bounded as a signed one, so what fits a frame does not depend
-on which kind either hop of a relay uses. A peer that sends no share keeps
-the session signed.
+exchanged X25519 shares, then MACed: SIGMA-style sign-then-MAC, as in TLS
+1.3, except that the shares follow the handshake instead of riding in it, so
+the hellos, and every peer that does not know the shares, are unchanged. Each
+side sends a `sessionKey` message as its first record, signed like any other,
+so the share is bound to the session ID and both identities; there is no key
+confirmation beyond the first MACed record verifying. A side that has sent
+its share and received the peer's derives one HMAC-SHA256 key per direction
+and drops its private share:
+
+- key = HKDF-SHA256(ikm: the X25519 secret, salt: session ID, info: D ‖
+  sender ‖ receiver ‖ sender's share ‖ receiver's share), 32 bytes, where D
+  is "ivy.session.mac.v1" after its length as a big-endian UInt32;
+- MAC = HMAC-SHA256(key, D ‖ session ID ‖ sequence as a big-endian UInt64 ‖
+  payload).
+
+A MACed record (tag 5) has the signed record's fields with the 32-byte MAC in
+place of the signature. It is sent only where the same record signed would
+fit, so what fits a frame does not depend on which kind either hop of a relay
+uses. An all-zero secret (a low-order share) makes no keys. Signed records
+stay accepted on every session, so a peer's records in flight across the
+switch, and every record of a peer that sends no share, still verify. One
+sequence counts both kinds. A peer that sends no share keeps the session
+signed.
 
 Wire/session protocol v9 rejects v8 during authentication. V9 introduces
 multi-frame complete-Volume replies, which cannot safely share the older
@@ -188,7 +199,7 @@ Everything else is an addition, and an addition needs no version:
   speaks it is the application's to learn (its own hello) and to tell Ivy by
   naming the peer; Ivy's hello carries no capabilities. The one exception is
   `sessionKey`, which Ivy sends to every session itself: one side has to
-  speak first. Peers through 14.0.x end the session on it, so this version
+  speak first. Peers through 14.0.0 end the session on it, so this version
   needs a peer of 14.1.0 or later.
 - A message whose tag this version does not know is ignored: the session
   stays up and nothing is recorded against the peer. A known message that

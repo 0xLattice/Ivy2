@@ -95,10 +95,6 @@ final class SessionMACTests: XCTestCase {
         XCTAssertTrue(Message.sessionKey(Data(count: 31)).serialize().isEmpty)
     }
 
-    /// For other implementations: identities from Ed25519 seeds of 0x01 and
-    /// 0x02 bytes, shares from X25519 private keys of the same bytes,
-    /// session ID 0x07 bytes; the keys of identity 1 and its record of
-    /// `ping(1)` at sequence 1. Checked against an independent implementation.
     func testWhatFitsAFrameDoesNotDependOnTheRecordKind() throws {
         // A carrier re-wraps a relayed record in its own session's kind, which
         // may differ from the sender's hop: what one hop accepts the other must.
@@ -115,6 +111,10 @@ final class SessionMACTests: XCTestCase {
         }
     }
 
+    /// For other implementations: identities from Ed25519 seeds of 0x01 and
+    /// 0x02 bytes, shares from X25519 private keys of the same bytes,
+    /// session ID 0x07 bytes; the keys of identity 1 and its record of
+    /// `ping(1)` at sequence 1. Checked against an independent implementation.
     func testFrozenVector() throws {
         let keys = keys(1, 2)
         XCTAssertEqual(share(1).publicKey.rawRepresentation.hex, "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209")

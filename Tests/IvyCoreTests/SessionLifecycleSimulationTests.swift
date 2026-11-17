@@ -960,7 +960,7 @@ final class SessionLifecycleSimulationTests: XCTestCase {
 
     // MARK: - Connect operations that end early
 
-    // "a transport closed during promotion cannot make connect succeed"
+    // "a transport closed before the server promotes cannot make connect succeed"
     func testClosedPromotionFailsAuthentication() {
         let sim = Simulation()
         // The server closes before the client's finish reaches it, so it has

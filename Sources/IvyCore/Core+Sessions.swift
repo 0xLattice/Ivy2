@@ -40,7 +40,7 @@ struct Session: Sendable {
     let metadata: PeerMetadata
     var sequenceState = SessionSequenceState()
     /// This side's X25519 share, held from when it is sent until the peer's
-    /// arrives.
+    /// arrives, or for the session if it never does.
     var keyShare: Curve25519.KeyAgreement.PrivateKey?
     /// Set once both shares are exchanged: records sent are then MACed, not
     /// signed. A peer that never sends a share keeps the session signed.
