@@ -39,9 +39,10 @@ struct Session: Sendable {
     let sessionID: SessionID
     let metadata: PeerMetadata
     var sequenceState = SessionSequenceState()
-    /// This side's X25519 share, held from when it is sent until the peer's
-    /// arrives, or for the session if it never does.
-    var keyShare: Curve25519.KeyAgreement.PrivateKey?
+    /// This side's X25519 private share, as bytes (the key type is not
+    /// Sendable in every swift-crypto version), held from when it is sent
+    /// until the peer's arrives, or for the session if it never does.
+    var keyShare: Data?
     /// Set once both shares are exchanged: records sent are then MACed, not
     /// signed. A peer that never sends a share keeps the session signed.
     var macKeys: SessionMACKeys?
@@ -565,16 +566,18 @@ extension IvyCore {
     /// Sends this side's share for the record MAC keys, first on the session.
     /// If it cannot be sent, the session stays signed.
     private mutating func offerSessionKey(_ ref: SessionRef) {
-        guard let share = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: random.bytes32()),
+        let bytes = random.bytes32()
+        guard let share = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: bytes),
               case .enqueued = enqueue(.sessionKey(share.publicKey.rawRepresentation), on: ref, reserve: true)
         else { return }
-        sessions[ref.key]?.keyShare = share
+        sessions[ref.key]?.keyShare = bytes
     }
 
     /// The peer's share, from a record already authenticated on `ref`.
     private mutating func acceptSessionKey(_ remoteShare: Data, on ref: SessionRef) {
         guard var session = sessions[ref.key], session.link == ref.link,
-              session.macKeys == nil, let share = session.keyShare else { return }
+              session.macKeys == nil, let bytes = session.keyShare,
+              let share = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: bytes) else { return }
         session.keyShare = nil
         session.macKeys = SessionMACKeys(
             localShare: share,
