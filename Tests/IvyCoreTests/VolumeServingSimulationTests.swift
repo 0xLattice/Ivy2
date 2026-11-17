@@ -659,7 +659,9 @@ final class VolumeServingSimulationTests: XCTestCase {
             guard entry.node == server.id, case .write(_, let bytes) = entry.effect else { return nil }
             return bytes.count - 4
         }
-        XCTAssertEqual(written.max(), Int(frame))
+        // The budget assumes signed records; these are MACed, 32 bytes
+        // shorter each, the endpoint's and the carrier's.
+        XCTAssertEqual(written.max(), Int(frame) - 2 * 32)
         let archive = VolumeArchive.encode(entries: entries, rootCID: "vol")!
         XCTAssertEqual(
             written.filter { $0 > 1024 }.count, (archive.data.count + relayed - 1) / relayed)

@@ -602,7 +602,8 @@ final class SessionLifecycleSimulationTests: XCTestCase {
         }
 
         let records = peer.takeDataRecords()
-        XCTAssertEqual(records.map(\.sequence), [1, 2, 3, 4, 5])
+        // Sequence 1 carried the node's MAC key share.
+        XCTAssertEqual(records.map(\.sequence), [2, 3, 4, 5, 6])
         XCTAssertTrue(records.allSatisfy { $0.sessionID == peer.sessionID })
         XCTAssertTrue(records.allSatisfy {
             $0.isValid(sender: node.key, receiver: peer.key, using: SimulatedSignatureScheme(key: peer.key))
@@ -959,9 +960,13 @@ final class SessionLifecycleSimulationTests: XCTestCase {
 
     // MARK: - Connect operations that end early
 
-    // "a transport closed during promotion cannot make connect succeed"
+    // "a transport closed before the server promotes cannot make connect succeed"
     func testClosedPromotionFailsAuthentication() {
         let sim = Simulation()
+        // The server closes before the client's finish reaches it, so it has
+        // written nothing after its hello: once promoted it would write its
+        // MAC key share, and the client would read that before the close.
+        sim.latency = .milliseconds(100)
         let server = sim.node()
         let client = sim.node()
         client.holdsDeliveries = true
@@ -1036,8 +1041,33 @@ final class SessionLifecycleSimulationTests: XCTestCase {
         XCTAssertEqual(server.core.peerConnectionCount, 0)
     }
 
-    // "configured maintenance survives a transport closing during promotion"
-    func testClosedPromotionRearmsConfiguredReconnect() throws {
+    // "a server that closes after it promoted is seen after what it wrote"
+    func testServerCloseAfterPromotionEndsTheConnectedSession() {
+        let sim = Simulation()
+        let server = sim.node()
+        let client = sim.node()
+        client.holdsDeliveries = true
+
+        let request = sim.request(.connect(server.endpoint), on: client)
+        sim.run(until: { !client.heldDeliveries.isEmpty })
+        sim.run(until: { server.core.peerConnectionCount == 1 })
+        sim.send(.command(.disconnect(client.peer)), to: server)
+        sim.run(for: .seconds(1))
+
+        // The close is behind the server's key share, unread while the
+        // promotion is held: connect has not returned and the session is up.
+        XCTAssertNil(sim.result(of: request, on: client))
+        XCTAssertEqual(client.core.peerConnectionCount, 1)
+
+        sim.openDeliveries(client)
+        sim.run(for: .seconds(1))
+        XCTAssertEqual(sim.result(of: request, on: client)?.isFailedConnect, false)
+        XCTAssertEqual(client.core.peerConnectionCount, 0)
+        XCTAssertEqual(server.core.peerConnectionCount, 0)
+    }
+
+    // "configured maintenance survives the server closing after it promoted"
+    func testServerCloseAfterPromotionRearmsConfiguredReconnect() throws {
         let sim = Simulation()
         let server = sim.node()
         let client = sim.node(
@@ -1050,6 +1080,37 @@ final class SessionLifecycleSimulationTests: XCTestCase {
         let inbound = try XCTUnwrap(server.core.authenticatedPeer(for: client.peer))
         XCTAssertEqual(sim.await(.recycleSession(inbound), on: server), .flag(true))
         sim.run(for: .milliseconds(50))
+
+        // The server's key share reached the client before the close, and the
+        // client reads nothing past it while the promotion is held, as with
+        // any record a server writes before closing: the close takes effect
+        // once deliveries open.
+        XCTAssertEqual(client.core.peerConnectionCount, 1)
+        XCTAssertNil(client.core.reconnectScheduled[server.peer])
+        sim.openDeliveries(client)
+        XCTAssertTrue(sim.run(until: {
+            client.core.reconnectScheduled[server.peer] != nil
+        }, timeout: .seconds(10)))
+        XCTAssertTrue(sim.run(until: {
+            client.core.peerConnectionCount == 1 && server.core.peerConnectionCount == 1
+        }, timeout: .seconds(10)))
+    }
+
+    // "configured maintenance survives a transport closing during promotion"
+    func testClosedPromotionRearmsConfiguredReconnect() throws {
+        let sim = Simulation()
+        let server = sim.node()
+        let client = sim.node(
+            bootstrap: [server.endpoint], mode: .pinned(peer: server.key.hex), start: false)
+        client.holdsDeliveries = true
+        // The server closes before the client's finish reaches it, as in
+        // `testClosedPromotionFailsAuthentication`.
+        sim.latency = .milliseconds(100)
+        sim.start(client)
+        sim.run(until: { !client.heldDeliveries.isEmpty })
+
+        sim.send(.command(.disconnect(client.peer)), to: server)
+        sim.run(for: .milliseconds(150))
 
         XCTAssertEqual(client.core.peerConnectionCount, 0)
         XCTAssertNotNil(client.core.reconnectScheduled[server.peer])

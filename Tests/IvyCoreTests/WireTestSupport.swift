@@ -14,6 +14,16 @@ func wireTestPeerKey(_ label: String) -> String {
     try! PeerKey(rawRepresentation: wireTestSigningKey(label).publicKey.rawRepresentation).hex
 }
 
+extension SessionWireRecord {
+    /// A node's share for the record MAC keys. The raw peers in these tests
+    /// speak the protocol as a peer from before it did, which ignores it.
+    var isSessionKeyOffer: Bool {
+        guard case .data(let data) = self,
+              case .sessionKey? = Message.deserialize(data.payload, maxDataPayload: .max) else { return false }
+        return true
+    }
+}
+
 /// A record behind its four-byte big-endian length, as it travels on a connection.
 func wireTestFramed(_ record: Data) -> Data {
     wireTestLengthPrefix(UInt32(record.count)) + record
@@ -39,8 +49,10 @@ final class WireRawPeer {
     private let scheme: SimulatedSignatureScheme
     private let nonce: Data
     private(set) var sessionID: SessionID?
-    private var nextSequence: UInt64 = 1
+    private(set) var nextSequence: UInt64 = 1
     private var output = Data()
+    /// Set by `exchangeKeys`: the peer then speaks the MAC mode too.
+    private(set) var macKeys: SessionMACKeys?
 
     var id: PeerID { key.peerID }
 
@@ -107,8 +119,9 @@ final class WireRawPeer {
         sim.writeRaw(wireTestFramed(record(message)), on: connection, to: node)
     }
 
-    /// The complete records the node has written since the last call.
-    func takeRecords() -> [SessionWireRecord] {
+    /// The complete records the node has written since the last call,
+    /// without its key share unless asked for.
+    func takeRecords(includingKeyShare: Bool = false) -> [SessionWireRecord] {
         output.append(sim.takeRawOutput(connection))
         var records: [SessionWireRecord] = []
         while output.count >= 4 {
@@ -116,16 +129,61 @@ final class WireRawPeer {
             guard output.count >= 4 + length else { break }
             let body = Data(output.dropFirst(4).prefix(length))
             output = Data(output.dropFirst(4 + length))
-            if let record = try? SessionWireRecord.deserialize(body) { records.append(record) }
+            if let record = try? SessionWireRecord.deserialize(body),
+               includingKeyShare || !record.isSessionKeyOffer {
+                records.append(record)
+            }
         }
         return records
     }
 
-    /// The messages the node has sent on the session since the last call.
+    /// The messages the node has sent on the session since the last call:
+    /// signed ones, and MACed ones once this peer has the keys.
     func takeMessages() -> [Message] {
         takeRecords().compactMap { record in
-            guard case .data(let data) = record else { return nil }
-            return Message.deserialize(data.payload)
+            switch record {
+            case .data(let data):
+                return Message.deserialize(data.payload)
+            case .macData(let data):
+                guard let macKeys, data.isValid(key: macKeys.receive) else { return nil }
+                return Message.deserialize(data.payload)
+            default:
+                return nil
+            }
         }
+    }
+
+    /// Sends this peer's key share and takes the node's, as a peer of this
+    /// version does. False when the node sent none.
+    @discardableResult
+    func exchangeKeys(attempt: Int = 0) -> Bool {
+        let share = try! Curve25519.KeyAgreement.PrivateKey(
+            rawRepresentation: Data(SHA256.hash(data: key.rawRepresentation + Data("share \(attempt)".utf8))))
+        send(.sessionKey(share.publicKey.rawRepresentation))
+        sim.run(for: .zero)
+        for record in takeRecords(includingKeyShare: true) {
+            guard case .data(let data) = record,
+                  case .sessionKey(let nodeShare)? = Message.deserialize(data.payload) else { continue }
+            macKeys = SessionMACKeys(
+                localShare: share, remoteShare: nodeShare, sessionID: sessionID!,
+                localKey: key, remoteKey: node.key)
+        }
+        return macKeys != nil
+    }
+
+    /// A MACed data record carrying `payload`, by default taking the next
+    /// sequence number.
+    func macRecord(payload: Data, sequence: UInt64? = nil, key: SymmetricKey? = nil) -> Data {
+        let record = try! SessionMACRecord.seal(
+            sessionID: sessionID!,
+            sequence: sequence ?? nextSequence,
+            payload: payload,
+            key: key ?? macKeys!.send)
+        if sequence == nil { nextSequence += 1 }
+        return SessionWireRecord.macData(record).serialize()
+    }
+
+    func write(_ record: Data) {
+        sim.writeRaw(wireTestFramed(record), on: connection, to: node)
     }
 }

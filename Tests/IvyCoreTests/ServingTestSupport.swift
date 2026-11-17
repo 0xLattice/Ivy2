@@ -106,8 +106,10 @@ final class ServingRawPeer {
             guard unparsed.count >= 4 + length else { break }
             let body = Data(unparsed.dropFirst(4).prefix(length))
             unparsed = Data(unparsed.dropFirst(4 + length))
+            let record = try? SessionWireRecord.deserialize(body)
+            if record?.isSessionKeyOffer == true { continue }
             frameSizes.append(length)
-            if let record = try? SessionWireRecord.deserialize(body) { records.append(record) }
+            if let record { records.append(record) }
         }
         return records
     }

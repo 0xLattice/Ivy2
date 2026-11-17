@@ -175,7 +175,8 @@ final class TransportBoundsSimulationTests: XCTestCase {
 
         let enqueued = sim.saturate(node, toward: peer.id)
         let sequenceState = try XCTUnwrap(node.core.sessions[peer.key]?.sequenceState)
-        XCTAssertEqual(sequenceState.nextToSend, UInt64(enqueued) + 1)
+        // Sequence 1 carried the node's MAC key share.
+        XCTAssertEqual(sequenceState.nextToSend, UInt64(enqueued) + 2)
         for _ in 0..<3 {
             XCTAssertEqual(
                 sim.await(.send(to: peer.id, topic: "state", payload: Data()), on: node)?.sent,
@@ -198,7 +199,7 @@ final class TransportBoundsSimulationTests: XCTestCase {
 
         // What reached the wire has no gap where the refused sends were.
         let records = peer.takeDataRecords()
-        XCTAssertEqual(records.map(\.sequence), Array(1...UInt64(enqueued) + 1))
+        XCTAssertEqual(records.map(\.sequence), Array(2...UInt64(enqueued) + 2))
 
         peer.close()
         XCTAssertEqual(sim.await(.waitUntilWritable(peer.id), on: node), .writable(false))

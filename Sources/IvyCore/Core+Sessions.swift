@@ -1,3 +1,4 @@
+import Crypto
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -38,6 +39,12 @@ struct Session: Sendable {
     let sessionID: SessionID
     let metadata: PeerMetadata
     var sequenceState = SessionSequenceState()
+    /// This side's X25519 share, held from when it is sent until the peer's
+    /// arrives, or for the session if it never does.
+    var keyShare: Curve25519.KeyAgreement.PrivateKey?
+    /// Set once both shares are exchanged: records sent are then MACed, not
+    /// signed. A peer that never sends a share keeps the session signed.
+    var macKeys: SessionMACKeys?
     var didNotifyConnect = false
     /// The connect operation waiting for the application to see this session.
     var op: OpID?
@@ -242,11 +249,7 @@ extension IvyCore {
         }
 
         if let key = sessionKeyByLink[id], let session = sessions[key], session.link == id {
-            guard case .data(let dataRecord) = record else {
-                rejectSession(session.ref, attributedTo: nil)
-                return
-            }
-            handleAuthenticatedData(dataRecord, session: session)
+            handleAuthenticatedData(record, session: session)
             return
         }
         guard pendingSessions[id] != nil else {
@@ -351,7 +354,7 @@ extension IvyCore {
             }
             promotePendingSession(id)
 
-        case .data:
+        case .data, .macData:
             rejectRecord(on: id)
         }
     }
@@ -508,6 +511,7 @@ extension IvyCore {
         if isProviderWalkDial(pending.op) { providerWalkSessions[peerKey] = sessionID.bytes }
         session.op = pending.op
         sessions[peerKey] = session
+        offerSessionKey(session.ref)
         let token = blockForDelivery(id, connected: peerKey)
         emit(.peerConnected(token, authenticatedPeer(session)))
     }
@@ -556,6 +560,29 @@ extension IvyCore {
             }
         }
         return nil
+    }
+
+    /// Sends this side's share for the record MAC keys, first on the session.
+    /// If it cannot be sent, the session stays signed.
+    private mutating func offerSessionKey(_ ref: SessionRef) {
+        guard let share = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: random.bytes32()),
+              case .enqueued = enqueue(.sessionKey(share.publicKey.rawRepresentation), on: ref, reserve: true)
+        else { return }
+        sessions[ref.key]?.keyShare = share
+    }
+
+    /// The peer's share, from a record already authenticated on `ref`.
+    private mutating func acceptSessionKey(_ remoteShare: Data, on ref: SessionRef) {
+        guard var session = sessions[ref.key], session.link == ref.link,
+              session.macKeys == nil, let share = session.keyShare else { return }
+        session.keyShare = nil
+        session.macKeys = SessionMACKeys(
+            localShare: share,
+            remoteShare: remoteShare,
+            sessionID: session.sessionID,
+            localKey: localKey,
+            remoteKey: session.peerKey)
+        sessions[ref.key] = session
     }
 
     // MARK: - Ending sessions
@@ -694,7 +721,7 @@ extension IvyCore {
         return enqueue(message, on: session.ref)
     }
 
-    /// Signs and sends `message` on exactly the session `ref` names.
+    /// Signs or MACs and sends `message` on exactly the session `ref` names.
     @discardableResult
     /// `reserve` is set by a caller carrying another record inside this one;
     /// otherwise the message itself says whether it may use the reserve.
@@ -721,14 +748,25 @@ extension IvyCore {
         }
         var sequenceState = session.sequenceState
         guard let sequence = sequenceState.takeNextOutgoing() else { return .locallyRejected }
-        guard let record = try? SessionDataRecord.sign(
-            sessionID: session.sessionID,
-            sender: localKey,
-            receiver: session.peerKey,
-            sequence: sequence,
-            payload: payload,
-            with: scheme) else { return .locallyRejected }
-        switch sendSessionRecord(.data(record), on: ref.link, reserve: reserve) {
+        let record: SessionWireRecord
+        if let keys = session.macKeys {
+            guard let sealed = try? SessionMACRecord.seal(
+                sessionID: session.sessionID,
+                sequence: sequence,
+                payload: payload,
+                key: keys.send) else { return .locallyRejected }
+            record = .macData(sealed)
+        } else {
+            guard let signed = try? SessionDataRecord.sign(
+                sessionID: session.sessionID,
+                sender: localKey,
+                receiver: session.peerKey,
+                sequence: sequence,
+                payload: payload,
+                with: scheme) else { return .locallyRejected }
+            record = .data(signed)
+        }
+        switch sendSessionRecord(record, on: ref.link, reserve: reserve) {
         case .sent:
             // The send may have ended the session it travelled on.
             guard sessions[ref.key]?.link == ref.link else { return .notConnected }
@@ -780,31 +818,62 @@ extension IvyCore {
 
     // MARK: - Signed receiving
 
-    private mutating func handleAuthenticatedData(_ record: SessionDataRecord, session: Session) {
+    /// A signed record is accepted on any session; a MACed one only once the
+    /// session has its keys. Both share one sequence. A MACed record is
+    /// evidence against the peer as a signed one is: only the two ends hold
+    /// the key for the peer's direction, and this end never MACs with it.
+    private mutating func handleAuthenticatedData(_ record: SessionWireRecord, session: Session) {
         let ref = session.ref
         guard isCurrent(ref) else { return }
         let direct = links[ref.link]?.isDirect ?? false
-        guard record.sessionID == session.sessionID,
-              session.sequenceState.canAcceptIncoming(record.sequence),
-              record.isValid(sender: session.peerKey, receiver: localKey, using: scheme) else {
+        let sessionID: SessionID, sequence: UInt64, payload: Data
+        switch record {
+        case .data(let signed):
+            (sessionID, sequence, payload) = (signed.sessionID, signed.sequence, signed.payload)
+        case .macData(let maced):
+            (sessionID, sequence, payload) = (maced.sessionID, maced.sequence, maced.payload)
+        case .helloInitiator, .helloResponder, .finish:
             rejectSession(ref, attributedTo: nil)
             return
         }
-        guard sessions[ref.key]?.sequenceState.acceptIncoming(record.sequence) == true else {
+        guard sessionID == session.sessionID,
+              session.sequenceState.canAcceptIncoming(sequence) else {
+            rejectSession(ref, attributedTo: nil)
+            return
+        }
+        let authentic: Bool
+        switch record {
+        case .data(let signed):
+            authentic = signed.isValid(sender: session.peerKey, receiver: localKey, using: scheme)
+        case .macData(let maced):
+            authentic = session.macKeys.map { maced.isValid(key: $0.receive) } ?? false
+        case .helloInitiator, .helloResponder, .finish:
+            authentic = false
+        }
+        guard authentic else {
+            rejectSession(ref, attributedTo: nil)
+            return
+        }
+        guard sessions[ref.key]?.sequenceState.acceptIncoming(sequence) == true else {
             rejectSession(ref, attributedTo: Self.attributedPeer(
                 session.peerKey, direct: direct, evidence: .signedTransport))
             return
         }
-        ledger.recordReceived(peer: session.peerKey.peerID, bytes: record.payload.count)
+        ledger.recordReceived(peer: session.peerKey.peerID, bytes: payload.count)
 
         guard let message = Message.deserialize(
-            record.payload, maxDataPayload: config.protocolMaxFrameSize) else {
+            payload, maxDataPayload: config.protocolMaxFrameSize) else {
             // A message a later version added is ignored, so a peer may be
             // sent one before this version knows it. A known message that
             // does not decode is a violation.
-            guard !Message.hasUnknownTag(record.payload) else { return }
+            guard !Message.hasUnknownTag(payload) else { return }
             rejectSession(ref, attributedTo: Self.attributedPeer(
                 session.peerKey, direct: direct, evidence: .signedPayload))
+            return
+        }
+
+        if case .sessionKey(let remoteShare) = message {
+            acceptSessionKey(remoteShare, on: ref)
             return
         }
 
