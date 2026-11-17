@@ -721,7 +721,7 @@ extension IvyCore {
         return enqueue(message, on: session.ref)
     }
 
-    /// Signs and sends `message` on exactly the session `ref` names.
+    /// Signs or MACs and sends `message` on exactly the session `ref` names.
     @discardableResult
     /// `reserve` is set by a caller carrying another record inside this one;
     /// otherwise the message itself says whether it may use the reserve.

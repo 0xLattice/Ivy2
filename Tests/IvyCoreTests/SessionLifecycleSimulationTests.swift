@@ -1041,6 +1041,31 @@ final class SessionLifecycleSimulationTests: XCTestCase {
         XCTAssertEqual(server.core.peerConnectionCount, 0)
     }
 
+    // "a server that closes after it promoted is seen after what it wrote"
+    func testServerCloseAfterPromotionEndsTheConnectedSession() {
+        let sim = Simulation()
+        let server = sim.node()
+        let client = sim.node()
+        client.holdsDeliveries = true
+
+        let request = sim.request(.connect(server.endpoint), on: client)
+        sim.run(until: { !client.heldDeliveries.isEmpty })
+        sim.run(until: { server.core.peerConnectionCount == 1 })
+        sim.send(.command(.disconnect(client.peer)), to: server)
+        sim.run(for: .seconds(1))
+
+        // The close is behind the server's key share, unread while the
+        // promotion is held: connect has not returned and the session is up.
+        XCTAssertNil(sim.result(of: request, on: client))
+        XCTAssertEqual(client.core.peerConnectionCount, 1)
+
+        sim.openDeliveries(client)
+        sim.run(for: .seconds(1))
+        XCTAssertEqual(sim.result(of: request, on: client)?.isFailedConnect, false)
+        XCTAssertEqual(client.core.peerConnectionCount, 0)
+        XCTAssertEqual(server.core.peerConnectionCount, 0)
+    }
+
     // "configured maintenance survives the server closing after it promoted"
     func testServerCloseAfterPromotionRearmsConfiguredReconnect() throws {
         let sim = Simulation()
@@ -1057,8 +1082,11 @@ final class SessionLifecycleSimulationTests: XCTestCase {
         sim.run(for: .milliseconds(50))
 
         // The server's key share reached the client before the close, and the
-        // client reads nothing past it while the promotion is held, so the
-        // close takes effect once deliveries open.
+        // client reads nothing past it while the promotion is held, as with
+        // any record a server writes before closing: the close takes effect
+        // once deliveries open.
+        XCTAssertEqual(client.core.peerConnectionCount, 1)
+        XCTAssertNil(client.core.reconnectScheduled[server.peer])
         sim.openDeliveries(client)
         XCTAssertTrue(sim.run(until: {
             client.core.reconnectScheduled[server.peer] != nil

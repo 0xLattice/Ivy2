@@ -169,9 +169,9 @@ private share, and from then on sends MACed records: the same fields, a
 32-byte MAC in place of the signature. Signed records stay accepted on every
 session, so a peer's records in flight across the switch, and every record
 of a peer that sends no share, still verify. One sequence counts both kinds.
-A peer that sends no share keeps the session signed; `sessionKey` is the one
-message Ivy sends to every session unasked, since every v9 peer from 14.1.0
-on ignores a tag it does not know.
+A MAC record is bounded as a signed one, so what fits a frame does not depend
+on which kind either hop of a relay uses. A peer that sends no share keeps
+the session signed.
 
 Wire/session protocol v9 rejects v8 during authentication. V9 introduces
 multi-frame complete-Volume replies, which cannot safely share the older
@@ -186,7 +186,10 @@ Everything else is an addition, and an addition needs no version:
   encoding or its meaning.
 - Ivy sends a new message only to a session its caller names. Whether a peer
   speaks it is the application's to learn (its own hello) and to tell Ivy by
-  naming the peer; Ivy's hello carries no capabilities.
+  naming the peer; Ivy's hello carries no capabilities. The one exception is
+  `sessionKey`, which Ivy sends to every session itself: one side has to
+  speak first. Peers through 14.0.x end the session on it, so this version
+  needs a peer of 14.1.0 or later.
 - A message whose tag this version does not know is ignored: the session
   stays up and nothing is recorded against the peer. A known message that
   does not decode still ends the session as a signed protocol violation.
@@ -496,8 +499,8 @@ attempt, and UTF-8 text to the end:
 - The peer connection is closed when its stream closes, when the peer
   disconnects, and when the connector is closed.
 
-Signalling is as authentic as the relayed session: its records are signed end
-to end, so the carrier can drop or delay an offer but not forge one. It is
+Signalling is as authentic as the relayed session: its records are signed or
+MACed end to end, so the carrier can drop or delay an offer but not forge one. It is
 not what authenticates the channel. The core's handshake runs over the
 channel as over any stream: the offerer accepts only the key it meant to
 reach, and the answerer learns the key of whoever is there, as on any stream

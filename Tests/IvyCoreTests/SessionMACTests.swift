@@ -99,6 +99,22 @@ final class SessionMACTests: XCTestCase {
     /// 0x02 bytes, shares from X25519 private keys of the same bytes,
     /// session ID 0x07 bytes; the keys of identity 1 and its record of
     /// `ping(1)` at sequence 1. Checked against an independent implementation.
+    func testWhatFitsAFrameDoesNotDependOnTheRecordKind() throws {
+        // A carrier re-wraps a relayed record in its own session's kind, which
+        // may differ from the sender's hop: what one hop accepts the other must.
+        let frame: UInt32 = 4096
+        for size in 3900...4096 {
+            let payload = Data(repeating: 1, count: size)
+            let signed = SessionWireRecord.data(SessionDataRecord(
+                sessionID: sessionID, sequence: 1, payload: payload, signature: Data(count: 64)))
+            let maced = SessionWireRecord.macData(try SessionMACRecord.seal(
+                sessionID: sessionID, sequence: 1, payload: payload, key: keys(1, 2).send))
+            XCTAssertEqual(
+                signed.serialize(maxPayload: frame).isEmpty, maced.serialize(maxPayload: frame).isEmpty,
+                "payload \(size)")
+        }
+    }
+
     func testFrozenVector() throws {
         let keys = keys(1, 2)
         XCTAssertEqual(share(1).publicKey.rawRepresentation.hex, "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209")
@@ -367,16 +383,38 @@ final class SessionMACTests: XCTestCase {
         let sim = Simulation()
         let node = sim.node()
         let first = macPeer(sim, node)
-        let stale = first.macRecord(payload: Message.ping(nonce: 1).serialize(), sequence: 50)
+        let staleKey = first.macKeys!.send
         // The same identity's next session, on a new connection.
         sim.closeRaw(first.connection, at: node)
         sim.run(for: .milliseconds(10))
         let second = WireRawPeer(sim, to: node, label: "mac-peer", attempt: 1)
         XCTAssertTrue(second.handshake())
         XCTAssertTrue(second.exchangeKeys(attempt: 1))
-        second.write(stale)
+        // The new session's ID and sequence under the old session's key: only
+        // the key tells them apart.
+        second.write(second.macRecord(payload: Message.ping(nonce: 1).serialize(), key: staleKey))
         sim.run(for: .milliseconds(10))
         assertEnded(second, at: node)
+    }
+
+    func testALowOrderShareKeepsTheSessionSigned() {
+        let sim = Simulation()
+        let node = sim.node()
+        let peer = WireRawPeer(sim, to: node, label: "low-order")
+        XCTAssertTrue(peer.handshake())
+        // u = 0 has order 1: the secret would be all zeros, known to anyone.
+        peer.send(.sessionKey(Data(count: 32)))
+        sim.run(for: .milliseconds(10))
+        XCTAssertNil(node.core.sessions[peer.key]?.macKeys)
+        _ = peer.takeRecords()
+        peer.send(.ping(nonce: 41))
+        sim.run(for: .milliseconds(10))
+        let records = peer.takeRecords()
+        XCTAssertEqual(records.count, 1)
+        guard case .data(let reply)? = records.first else { return XCTFail("the reply is not signed") }
+        XCTAssertEqual(Message.deserialize(reply.payload)?.pongNonce, 41)
+        XCTAssertNotNil(node.core.sessions[peer.key])
+        XCTAssertEqual(node.ledger.violations(of: peer.id), 0)
     }
 
     func testASecondShareIsIgnored() {

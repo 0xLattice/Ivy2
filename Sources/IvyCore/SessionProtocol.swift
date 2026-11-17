@@ -369,7 +369,7 @@ struct SessionMACKeys: Sendable {
         guard let remote = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: remoteShare),
               let secret = try? localShare.sharedSecretFromKeyAgreement(with: remote),
               // A low-order share gives the all-zero secret, known to anyone.
-              secret.withUnsafeBytes({ $0.contains { $0 != 0 } }) else { return nil }
+              secret.withUnsafeBytes({ $0.reduce(0, |) }) != 0 else { return nil }
         let localPublic = localShare.publicKey.rawRepresentation
         func key(sender: PeerKey, receiver: PeerKey, senderShare: Data, receiverShare: Data) -> SymmetricKey {
             var info = SessionDomains.mac
@@ -455,8 +455,7 @@ struct SessionSequenceState: Sendable, Equatable {
 
 enum SessionWireRecord: Sendable, Equatable {
     private static let magic = Data([0x49, 0x56, 0x59, 0x09])
-    /// Bounds both data records: a MAC record's 32-byte code is smaller
-    /// than a signature.
+    /// Bounds both data records: a MAC record is bounded as a signed one.
     static let dataRecordOverhead = magic.count + 1 + 32 + 8 + 4 + 64
     /// Envelope bytes wrapping a signed hello: magic + tag + the 4-byte
     /// length prefix `appendSessionData` writes + the 64-byte signature.
@@ -517,6 +516,10 @@ enum SessionWireRecord: Sendable, Equatable {
             bytes.appendUInt64(record.sequence)
             guard bytes.appendSessionData(record.payload) else { return Data() }
             bytes.append(record.mac)
+            // Bounded as if it carried a signature, so what fits does not
+            // depend on the kind of record: a carrier that relays it on a
+            // signed session must fit it too.
+            guard bytes.count + 32 <= Int(clamping: maxPayload) else { return Data() }
         }
         return bytes.count <= Int(clamping: maxPayload) ? bytes : Data()
     }
