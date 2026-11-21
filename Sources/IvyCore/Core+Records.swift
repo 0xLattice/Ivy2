@@ -428,7 +428,8 @@ extension IvyCore {
                   let url = session.webAddresses?.first(where: { $0.via == nil })?.url else { continue }
             urls[key] = url
         }
-        // Only half the slots are kept, the oldest choices first: the rest
+        // Only half the slots are kept, by the first relays in the current
+        // list: the rest
         // always go by rank, so relays that hold on cannot fill them all.
         var chosen = Array(localWebAddresses.compactMap(\.via).filter { urls[$0] != nil }
             .prefix(WebAddress.maxCount / 2))

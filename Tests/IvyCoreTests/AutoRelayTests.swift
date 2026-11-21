@@ -74,7 +74,7 @@ final class AutoRelayTests: XCTestCase {
         }
     }
 
-    /// Half the slots hold their relays, the oldest first, while they stay
+    /// Half the slots, the first relays in the current list, hold while they stay
     /// candidates; the other half always go to the best-ranked, so relays
     /// that arrive first cannot keep them all. A lost relay is replaced, and
     /// a relay's changed addresses or `setRelaying(false)` take effect.
@@ -131,6 +131,21 @@ final class AutoRelayTests: XCTestCase {
         let newcomer = DiscoveryScriptedPeer(f.sim, to: f.node, index: 50)
         f.sim.run(for: IvyCore.webAddressesInterval + .seconds(1))
         XCTAssertEqual(newcomer.takeWebAddresses(), [current])
+    }
+
+    /// A restart forgets the last run: its first session hears no relay of
+    /// the last run's, and its first relay is told at once, not after the
+    /// last run's interval.
+    func testARestartStartsAfresh() {
+        let f = Fixture()
+        _ = f.peer()
+        f.sim.stop(f.node)
+        f.sim.start(f.node)
+        let newcomer = DiscoveryScriptedPeer(f.sim, to: f.node, index: 50)
+        XCTAssertEqual(newcomer.takeWebAddresses(), [[]])
+        let relay = f.peer()
+        f.sim.run(for: .milliseconds(10))
+        XCTAssertEqual(newcomer.takeWebAddresses().map(vias), [[relay.key]])
     }
 
     /// A declared list wins; with auto relay off nothing is advertised.

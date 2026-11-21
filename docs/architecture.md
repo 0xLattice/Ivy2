@@ -371,7 +371,7 @@ AutoRelay does: with `setAutoRelay(true)` and no declared addresses, it
 advertises up to four, one for each direct session the application marked with
 `setRelaying` whose peer advertised an address without `via`, as that address
 with `via` the relay. Half the slots keep their relay while it remains a
-candidate, the oldest choices first; the rest always go to the candidates first
+candidate, taken by the first relays in the current list; the rest always go to the candidates first
 by SHA-256 of this node's key then the relay's. So no key can be ground to be
 every node's relay, nodes spread over relays, and relays that arrived first
 cannot hold every slot. A node targeted by relays whose keys were ground to rank

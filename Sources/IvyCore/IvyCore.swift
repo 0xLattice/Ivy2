@@ -314,6 +314,10 @@ public struct IvyCore: Sendable {
     private mutating func stop() {
         isRunning = false
         timers.removeAll()
+        // The relays this run chose are not the next run's; what the caller
+        // declared and whether auto relay is on are kept.
+        localWebAddresses = declaredWebAddresses
+        webAddressesSentAt = nil
 
         failAllServing()
         for id in volumeFetches.keys.sorted() { finishVolumeFetch(id, .empty) }
