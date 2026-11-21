@@ -189,7 +189,7 @@ public enum RequestResult: Sendable, Equatable {
 }
 
 /// A provider's route and the web addresses its record carries.
-public struct DiscoveredProvider: Sendable, Equatable {
+public struct DiscoveredProvider: Sendable, Hashable {
     public let endpoint: PeerEndpoint
     public let webAddresses: [WebAddress]
 

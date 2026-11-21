@@ -144,6 +144,7 @@ extension IvyCore {
 
         case .webAddresses(let addresses):
             sessions[ref.key]?.webAddresses = addresses
+            if announcerWebAddresses[peer] != nil { announcerWebAddresses[peer] = addresses }
 
         case .providersWithAddresses(let rootCID, let requestID, let records):
             handleProvidersResponse(

@@ -12,8 +12,10 @@ struct ProviderHint: Sendable, Equatable {
     /// The authenticated peer whose quota this record counts against: the
     /// announcer, or the responder that referred it.
     let source: PeerID
-    /// The announcer's web addresses, or those the referral carried. They
-    /// play no part in which records are kept.
+    /// The web addresses a referral carried. A record a provider gave for
+    /// itself holds none: its provider's latest are kept once, in
+    /// `announcerWebAddresses`. Part of a route's identity, so a referral
+    /// naming a known endpoint with other addresses sits beside it.
     var webAddresses: [WebAddress] = []
 }
 
@@ -56,7 +58,9 @@ extension IvyCore {
         // caller of no one new, so only a record naming a peer this node has
         // no session with answers without asking the network.
         guard !cached.contains(where: { !hasEndpointSession(PeerID(publicKey: $0.endpoint.publicKey)) }) else {
-            return complete(request, withAddresses ? .providers(cached) : .endpoints(cached.map(\.endpoint)))
+            return complete(request, withAddresses
+                ? .providers(cached)
+                : .endpoints(uniqueProviderEndpoints(cached.map(\.endpoint))))
         }
         startProviderSearch(
             rootCID: rootCID,
@@ -171,7 +175,9 @@ extension IvyCore {
         switch search.waiter {
         case .request(let request, let cached, let withAddresses):
             let found = uniqueProviders(cached + providers)
-            complete(request, withAddresses ? .providers(found) : .endpoints(found.map(\.endpoint)))
+            complete(request, withAddresses
+                ? .providers(found)
+                : .endpoints(uniqueProviderEndpoints(found.map(\.endpoint))))
         case .volumeFetch(let fetch):
             volumeFetchProviderSearchFinished(
                 fetch, search: id, endpoints: providers.map(\.endpoint))
@@ -185,12 +191,39 @@ extension IvyCore {
         evictExpiredProviders(rootCID: rootCID)
         let records = providerRecordsForWire(providerHints[rootCID] ?? [])
         // Only a peer that has sent `webAddresses` knows the answer with them.
-        let speaksWebAddresses = endpointSession(for: peer)?.webAddresses != nil
-        fireToPeer(
-            peer,
-            speaksWebAddresses
-                ? .providersWithAddresses(rootCID: rootCID, requestID: requestID, records: records)
-                : .providers(rootCID: rootCID, requestID: requestID, records: records))
+        guard let session = endpointSession(for: peer), session.webAddresses != nil else {
+            fireToPeer(peer, .providers(rootCID: rootCID, requestID: requestID, records: records))
+            return
+        }
+        fireToPeer(peer, .providersWithAddresses(
+            rootCID: rootCID,
+            requestID: requestID,
+            records: fittingProviderRecords(records, rootCID: rootCID, link: session.link)))
+    }
+
+    /// `records` cut to fit one `providersWithAddresses` on `link`: the last
+    /// records lose their addresses first, then the last records go.
+    private func fittingProviderRecords(
+        _ records: [ProviderRecord], rootCID: String, link: LinkID
+    ) -> [ProviderRecord] {
+        let relayed = links[link]?.isDirect == false
+        let budget = Int(clamping: effectiveOutboundFrameSize(for: link))
+            - SessionWireRecord.dataRecordOverhead
+            - (relayed ? Message.relayPacketEnvelopeOverhead + SessionWireRecord.dataRecordOverhead : 0)
+            - (1 + 2 + rootCID.utf8.count + 2 + 8)
+        func size(_ record: ProviderRecord) -> Int {
+            2 + record.endpoint.publicKey.utf8.count + 2 + record.endpoint.host.utf8.count + 2 + 8 + 2
+                + record.webAddresses.reduce(0) { $0 + 2 + $1.url.utf8.count + 1 + ($1.via == nil ? 0 : 32) }
+        }
+        var fitted = records
+        var total = fitted.reduce(0) { $0 + size($1) }
+        for index in fitted.indices.reversed() where total > budget {
+            total -= size(fitted[index])
+            fitted[index].webAddresses = []
+            total += size(fitted[index])
+        }
+        while total > budget, let last = fitted.popLast() { total -= size(last) }
+        return fitted
     }
 
     /// At most `maxNeighborCount` records, every identity's first route
@@ -202,7 +235,7 @@ extension IvyCore {
         let records = hints.compactMap { hint -> ProviderRecord? in
             guard let endpoint = hint.endpoint else { return nil }
             return ProviderRecord(
-                endpoint: endpoint, expiresAt: hint.expiresAt, webAddresses: hint.webAddresses)
+                endpoint: endpoint, expiresAt: hint.expiresAt, webAddresses: providerWebAddresses(hint))
         }.sorted {
             ($0.endpoint.publicKey, $0.endpoint.host, $0.endpoint.port)
                 < ($1.endpoint.publicKey, $1.endpoint.host, $1.endpoint.port)
@@ -276,6 +309,13 @@ extension IvyCore {
             webAddresses: endpointSession(for: peer)?.webAddresses ?? [])
     }
 
+    /// The addresses a record is answered with: a provider's own record
+    /// carries its latest, a referral what it was referred with.
+    func providerWebAddresses(_ hint: ProviderHint) -> [WebAddress] {
+        guard hint.source == hint.peer else { return hint.webAddresses }
+        return hint.peer == localID ? localWebAddresses : announcerWebAddresses[hint.peer] ?? []
+    }
+
     mutating func announceProvider(rootCID: String, expiresAt: UInt64) {
         guard config.mode.usesOverlayServices,
               MessageLimits.accepts(rootCID),
@@ -286,8 +326,7 @@ extension IvyCore {
                 peer: localID,
                 endpoint: endpoint,
                 expiresAt: expiresAt,
-                source: localID,
-                webAddresses: localWebAddresses)
+                source: localID)
         }
         guard isRunning else { return }
         // A walk already running for the root announces the newest expiry.
@@ -322,15 +361,6 @@ extension IvyCore {
     mutating func setWebAddresses(_ addresses: [WebAddress]) {
         guard WebAddress.isValidList(addresses), addresses != localWebAddresses else { return }
         localWebAddresses = addresses
-        for rootCID in providerHints.keys.sorted()
-            where providerHints[rootCID]?.contains(where: { $0.source == localID }) == true {
-            setProviderHints(providerHints[rootCID]!.map { hint in
-                guard hint.source == localID else { return hint }
-                var own = hint
-                own.webAddresses = addresses
-                return own
-            }, rootCID: rootCID)
-        }
         for key in sessions.keys.sorted() {
             if let ref = sessions[key]?.ref { sendWebAddresses(on: ref) }
         }
@@ -346,20 +376,20 @@ extension IvyCore {
     }
 
     mutating func cachedProviderEndpoints(rootCID: String) -> [PeerEndpoint] {
-        cachedProviders(rootCID: rootCID).map(\.endpoint)
+        uniqueProviderEndpoints(cachedProviders(rootCID: rootCID).map(\.endpoint))
     }
 
     mutating func cachedProviders(rootCID: String) -> [DiscoveredProvider] {
         evictExpiredProviders(rootCID: rootCID)
         return uniqueProviders((providerHints[rootCID] ?? []).compactMap { hint in
-            hint.endpoint.map { DiscoveredProvider(endpoint: $0, webAddresses: hint.webAddresses) }
+            hint.endpoint.map { DiscoveredProvider(endpoint: $0, webAddresses: providerWebAddresses(hint)) }
         })
     }
 
-    /// The first of each endpoint.
+    /// The first of each route: an endpoint with its addresses.
     func uniqueProviders(_ providers: [DiscoveredProvider]) -> [DiscoveredProvider] {
-        var seen: Set<PeerEndpoint> = []
-        return providers.filter { seen.insert($0.endpoint).inserted }
+        var seen: Set<DiscoveredProvider> = []
+        return providers.filter { seen.insert($0).inserted }
     }
 
     func uniqueProviderEndpoints(_ endpoints: [PeerEndpoint]) -> [PeerEndpoint] {
@@ -376,12 +406,19 @@ extension IvyCore {
         webAddresses: [WebAddress] = []
     ) {
         let source = source ?? peer
+        // A provider's own record reads its provider's latest addresses,
+        // kept once below; only a referral holds its own.
         let hint = ProviderHint(
             peer: peer,
             endpoint: endpoint,
             expiresAt: expiresAt,
             source: source,
-            webAddresses: webAddresses)
+            webAddresses: source == peer ? [] : webAddresses)
+        defer {
+            if source == peer, peer != localID, providerRecordCounts[peer] != nil {
+                announcerWebAddresses[peer] = webAddresses
+            }
+        }
         evictExpiredProviders(rootCID: rootCID)
         // A referral never overrides what a provider announced for itself.
         if source != peer,
@@ -451,13 +488,18 @@ extension IvyCore {
 
     /// The single writer of `providerHints`; keeps the per-source counts exact.
     private mutating func setProviderHints(_ hints: [ProviderHint], rootCID: String) {
-        for hint in providerHints[rootCID] ?? [] where hint.source != localID {
+        let old = providerHints[rootCID] ?? []
+        for hint in old where hint.source != localID {
             countProviderRecord(source: hint.source, rootCID: rootCID, delta: -1)
         }
         for hint in hints where hint.source != localID {
             countProviderRecord(source: hint.source, rootCID: rootCID, delta: 1)
         }
         providerHints[rootCID] = hints.isEmpty ? nil : hints
+        // A peer's addresses go with its last record.
+        for hint in old where providerRecordCounts[hint.source] == nil {
+            announcerWebAddresses[hint.source] = nil
+        }
     }
 
     private mutating func countProviderRecord(source: PeerID, rootCID: String, delta: Int) {
@@ -490,7 +532,7 @@ extension IvyCore {
             peerOrder.removeAll { $0 == hint.peer }
             peerOrder.append(hint.peer)
             var routes = routesByPeer[hint.peer] ?? []
-            routes.removeAll { $0.endpoint == hint.endpoint }
+            routes.removeAll { $0.endpoint == hint.endpoint && $0.webAddresses == hint.webAddresses }
             routes.append(hint)
             routesByPeer[hint.peer] = Array(routes.suffix(config.maxRoutesPerIdentity))
         }
@@ -549,7 +591,7 @@ extension IvyCore {
         }
 
         var selected: [ProviderHint] = []
-        var seenEndpoints: Set<PeerEndpoint> = []
+        var seenRoutes: Set<DiscoveredProvider> = []
         for routeIndex in 0..<config.maxRoutesPerIdentity {
             for peer in peers {
                 for source in sources {
@@ -559,7 +601,8 @@ extension IvyCore {
                             < config.maxRoutesPerIdentity else { continue }
                     let hint = routes[routeIndex]
                     guard let endpoint = hint.endpoint,
-                          seenEndpoints.insert(endpoint).inserted else { continue }
+                          seenRoutes.insert(DiscoveredProvider(
+                            endpoint: endpoint, webAddresses: hint.webAddresses)).inserted else { continue }
                     selected.append(hint)
                 }
             }

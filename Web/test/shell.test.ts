@@ -362,6 +362,7 @@ test('discoverProviders gives each provider the web addresses its record carries
   const relay = node().localID;
   const webAddresses = [{ url: 'wss://p.example/ivy' }, { url: 'wss://relay.example/ivy', via: relay }];
   assert.throws(() => provider.setWebAddresses([{ url: 'https://p.example' }]));
+  assert.throws(() => provider.setWebAddresses([{ url: 'wss://p.example', via: 'not-a-key' }]));
   provider.setWebAddresses(webAddresses);
   provider.announceProvider('vol', Math.floor(Date.now() / 1000) + 60);
   await join(browser, provider);

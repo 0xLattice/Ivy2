@@ -199,8 +199,8 @@ Everything else is an addition, and an addition needs no version:
   speaks it is the application's to learn (its own hello) and to tell Ivy by
   naming the peer; Ivy's hello carries no capabilities. The exceptions are
   `sessionKey` and `webAddresses` (tag 43), which Ivy sends to every session
-  itself: one side has to speak first. Peers through 14.0.0 end the session
-  on them, so this version needs a peer of 14.1.0 or later. A peer that sends
+  itself: one side has to speak first. Every Ivy2 peer (2.0.0 on) ignores
+  a tag it does not know. A peer that sends
   `webAddresses` has said it speaks `providersWithAddresses` (tag 44).
 - A message whose tag this version does not know is ignored: the session
   stays up and nothing is recorded against the peer. A known message that
@@ -349,9 +349,12 @@ One without `via` is where the peer itself listens; one with `via` says
 "connect to peer `via` at this URL and relay through it". Every session is
 sent the node's set (`webAddresses`, tag 43) when it opens, empty if none, and
 again whenever `setWebAddresses` changes it; what a peer sent last replaces
-what it sent before. An announcement is stored with the addresses its
-announcer's session last sent, a node's own record carries its own, and a
-record learned from an answer keeps the addresses it came with. A
+what it sent before. A provider's own records are answered with the
+addresses it sent last, kept once per provider however many records it
+holds; a node's own records carry its own. A record referred by an answer
+keeps the addresses it came with, and the same endpoint referred with other
+addresses is another route beside it, as another endpoint would be, so a
+referral cannot replace a provider's addresses. A
 `findProviders` from a peer that has sent tag 43 is answered with
 `providersWithAddresses` (tag 44), the records of `providers` (tag 41) each
 followed by its addresses; any other peer is answered with tag 41 exactly as
@@ -359,7 +362,8 @@ before, so peers predating web addresses never see tag 44 and ignore tag 43.
 Addresses are the advertiser's unauthenticated claim, as a record's endpoint
 is: the dialer proves the key when it connects. They play no part in which
 records are kept, evicted or counted, and are bounded with the records that
-carry them. `discoverProviderAddresses` returns them; `discoverProviders`
+carry them. An answer too large for the asker's frame size drops the last
+records' addresses, then the last records. `discoverProviderAddresses` returns them; `discoverProviders`
 does not.
 
 `providerReach` chooses what walks may do. `.walk`, the default, dials peers

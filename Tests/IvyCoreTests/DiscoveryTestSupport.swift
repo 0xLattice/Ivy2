@@ -35,7 +35,8 @@ final class DiscoveryScriptedPeer {
         to node: Simulation.Node,
         index: Int,
         host: String? = nil,
-        listen: [ListenAddress]? = nil
+        listen: [ListenAddress]? = nil,
+        maxFrameSize: UInt32 = IvyConfig.defaultProtocolMaxFrameSize
     ) {
         self.sim = sim
         self.node = node
@@ -47,7 +48,8 @@ final class DiscoveryScriptedPeer {
         connection = sim.openRawConnection(to: node, fromHost: host)
 
         let metadata = PeerMetadata(
-            listenAddresses: listen ?? [ListenAddress(host: host, port: 4001)])
+            listenAddresses: listen ?? [ListenAddress(host: host, port: 4001)],
+            maxFrameSize: maxFrameSize)
         guard let encoded = metadata.encode(),
               let hello = try? SignedSessionHelloInitiator.sign(
                 SessionHelloInitiator(

@@ -610,11 +610,13 @@ export class Ivy {
   /// provider records carry them. Without a call the core tells its
   /// sessions it has none, which is what asks them for addresses in their
   /// provider answers. Throws unless there are at most four, each a
-  /// `ws://` or `wss://` URL of at most 256 printable ASCII bytes.
+  /// `ws://` or `wss://` URL of at most 256 printable ASCII bytes whose
+  /// `via`, if any, is a public key in lower-case hex.
   setWebAddresses(addresses: WebAddress[]) {
     const valid = (url: string) =>
       url.length <= 256 && /^wss?:\/\/[\x21-\x7e]+$/.test(url);
-    if (addresses.length > 4 || !addresses.every((address) => valid(address.url))) {
+    const key = (via: string | undefined) => via === undefined || /^[0-9a-f]{64}$/.test(via);
+    if (addresses.length > 4 || !addresses.every((address) => valid(address.url) && key(address.via))) {
       throw new Error('not valid web addresses');
     }
     this.command({ kind: 'setWebAddresses', addresses });

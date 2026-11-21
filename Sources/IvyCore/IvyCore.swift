@@ -100,6 +100,9 @@ public struct IvyCore: Sendable {
     /// Remote sources grouped by record count, to find the heaviest without a scan.
     var providerSourcesByCount: [Int: Set<PeerID>] = [:]
     var providerRecordTotal = 0
+    /// The latest web addresses of each peer holding a record it gave for
+    /// itself: one copy a peer, however many records it holds.
+    var announcerWebAddresses: [PeerID: [WebAddress]] = [:]
     var pendingProviderQueries: [String: PendingProviderQuery] = [:]
     var providerSearches: [OpID: ProviderSearch] = [:]
     /// The `findNode` each root's provider searches are waiting on.

@@ -48,9 +48,38 @@ final class WebAddressTests: XCTestCase {
         XCTAssertTrue(old.takeProvidersWithAddresses().isEmpty)
     }
 
+    /// Runs a `discoverProviderAddresses` for `root` on `node`; each peer in
+    /// `answers` answers with its records in tag 44, every other peer asked
+    /// with none.
+    private func search(
+        _ sim: Simulation, _ node: Simulation.Node, root: String,
+        peers: [DiscoveryScriptedPeer], answers: [ObjectIdentifier: [ProviderRecord]]
+    ) -> [DiscoveredProvider]? {
+        let search = sim.request(.discoverProviderAddresses(rootCID: root), on: node)
+        sim.settleLookups(on: node, answering: peers)
+        for peer in peers {
+            for asked in peer.takeFindProviders() {
+                peer.send(.providersWithAddresses(
+                    rootCID: asked.rootCID, requestID: asked.requestID,
+                    records: answers[ObjectIdentifier(peer)] ?? []))
+            }
+        }
+        guard sim.run(until: { sim.result(of: search, on: node) != nil }, timeout: .seconds(5)),
+              case .providers(let found) = sim.result(of: search, on: node) else { return nil }
+        return found
+    }
+
+    /// What `asker` is answered for `root`, as routes.
+    private func answer(_ asker: DiscoveryScriptedPeer, root: String) -> [DiscoveredProvider]? {
+        asker.send(.findProviders(rootCID: root, requestID: 9))
+        return asker.takeProvidersWithAddresses().first?.records.map {
+            DiscoveredProvider(endpoint: $0.endpoint, webAddresses: $0.webAddresses)
+        }
+    }
+
     /// A record learned from a tag-44 answer keeps its addresses: the
     /// search returns them and the node serves them onward.
-    func testAddressesSurviveAReferralHop() {
+    func testAddressesSurviveAReferralHop() throws {
         let sim = Simulation()
         let node = sim.node()
         let responder = DiscoveryScriptedPeer(sim, to: node, index: 0)
@@ -58,54 +87,104 @@ final class WebAddressTests: XCTestCase {
         let provider = sim.discoveryUnreachableEndpoint(index: 0)
         let addresses = [relayed(sim)]
         let expiry = sim.unixSeconds + 60
+        let route = DiscoveredProvider(endpoint: provider, webAddresses: addresses)
 
-        let search = sim.request(.discoverProviderAddresses(rootCID: "root"), on: node)
-        sim.settleLookups(on: node, answering: [responder, asker])
-        for peer in [responder, asker] {
-            for asked in peer.takeFindProviders() {
-                let records = peer === responder
-                    ? [ProviderRecord(endpoint: provider, expiresAt: expiry, webAddresses: addresses)]
-                    : []
-                peer.send(.providersWithAddresses(
-                    rootCID: asked.rootCID, requestID: asked.requestID, records: records))
-            }
-        }
-        XCTAssertTrue(sim.run(until: { sim.result(of: search, on: node) != nil }, timeout: .seconds(5)))
-        guard case .providers(let found) = sim.result(of: search, on: node) else {
-            return XCTFail("no providers result")
-        }
-        XCTAssertEqual(found, [DiscoveredProvider(endpoint: provider, webAddresses: addresses)])
-
-        asker.send(.webAddresses([]))
-        asker.send(.findProviders(rootCID: "root", requestID: 9))
-        XCTAssertEqual(asker.takeProvidersWithAddresses().first?.records, [
-            ProviderRecord(endpoint: provider, expiresAt: expiry, webAddresses: addresses),
+        let found = search(sim, node, root: "root", peers: [responder, asker], answers: [
+            ObjectIdentifier(responder): [ProviderRecord(endpoint: provider, expiresAt: expiry, webAddresses: addresses)],
         ])
+        XCTAssertEqual(found, [route])
+        asker.send(.webAddresses([]))
+        XCTAssertEqual(answer(asker, root: "root"), [route])
     }
 
-    /// Setting addresses tells every session again, and this node's own
-    /// records carry the new set. On the receiving side, an announcement
-    /// carries what the announcer last sent.
-    func testChangingAddressesIsResentAndCarriedByLaterAnnouncements() {
+    /// A referral naming a provider's endpoint with other addresses is a
+    /// route of its own beside the honest one, never a replacement; and no
+    /// referral touches what a provider announced for itself.
+    func testAReferralCannotReplaceAProvidersAddresses() throws {
+        let sim = Simulation()
+        let node = sim.node()
+        let honest = DiscoveryScriptedPeer(sim, to: node, index: 0)
+        let hostile = DiscoveryScriptedPeer(sim, to: node, index: 1)
+        let asker = DiscoveryScriptedPeer(sim, to: node, index: 2)
+        let announcer = DiscoveryScriptedPeer(sim, to: node, index: 3)
+        let peers = [honest, hostile, asker, announcer]
+        let provider = sim.discoveryUnreachableEndpoint(index: 0)
+        let expiry = sim.unixSeconds + 60
+        asker.send(.webAddresses([]))
+
+        let real = DiscoveredProvider(endpoint: provider, webAddresses: [direct])
+        let spoof = DiscoveredProvider(endpoint: provider, webAddresses: [])
+        let found = try XCTUnwrap(search(sim, node, root: "referred", peers: peers, answers: [
+            ObjectIdentifier(honest): [ProviderRecord(endpoint: provider, expiresAt: expiry, webAddresses: [direct])],
+            ObjectIdentifier(hostile): [ProviderRecord(endpoint: provider, expiresAt: expiry)],
+        ]))
+        XCTAssertEqual(Set(found), [real, spoof])
+        XCTAssertEqual(Set(try XCTUnwrap(answer(asker, root: "referred"))), [real, spoof])
+
+        announcer.send(.webAddresses([direct]))
+        announcer.send(.announceProvider(rootCID: "announced", expiresAt: expiry))
+        _ = search(sim, node, root: "announced", peers: peers, answers: [
+            ObjectIdentifier(hostile): [ProviderRecord(endpoint: announcer.endpoint, expiresAt: expiry)],
+        ])
+        XCTAssertEqual(answer(asker, root: "announced"),
+                       [DiscoveredProvider(endpoint: announcer.endpoint, webAddresses: [direct])])
+    }
+
+    /// A provider's records are answered with the addresses it sent last,
+    /// whenever it announced them; this node's own with its own.
+    func testRecordsCarryTheProvidersLatestAddresses() {
         let sim = Simulation()
         let node = sim.discoveryNode(externalAddress: ("8.44.0.1", 5000))
         let peer = DiscoveryScriptedPeer(sim, to: node, index: 0)
+        let asker = DiscoveryScriptedPeer(sim, to: node, index: 1)
+        asker.send(.webAddresses([]))
         let expiry = sim.unixSeconds + 60
+        let own = PeerEndpoint(publicKey: node.key.hex, host: "8.44.0.1", port: 5000)
 
         sim.send(.command(.setWebAddresses([direct])), to: node)
         sim.send(.command(.setWebAddresses([WebAddress(url: "ftp://nope")])), to: node)
         XCTAssertEqual(peer.takeWebAddresses(), [[], [direct]], "an invalid set is ignored")
         sim.send(.command(.announceProvider(rootCID: "own", expiresAt: expiry)), to: node)
-        XCTAssertEqual(node.core.providerHints["own"]?.map(\.webAddresses), [[direct]])
+        XCTAssertEqual(answer(asker, root: "own"), [DiscoveredProvider(endpoint: own, webAddresses: [direct])])
         sim.send(.command(.setWebAddresses([])), to: node)
         XCTAssertEqual(peer.takeWebAddresses(), [[]])
-        XCTAssertEqual(node.core.providerHints["own"]?.map(\.webAddresses), [[]])
+        XCTAssertEqual(answer(asker, root: "own"), [DiscoveredProvider(endpoint: own, webAddresses: [])])
 
         peer.send(.webAddresses([direct]))
         peer.send(.announceProvider(rootCID: "first", expiresAt: expiry))
+        XCTAssertEqual(answer(asker, root: "first"),
+                       [DiscoveredProvider(endpoint: peer.endpoint, webAddresses: [direct])])
         peer.send(.webAddresses([relayed(sim)]))
         peer.send(.announceProvider(rootCID: "second", expiresAt: expiry))
-        XCTAssertEqual(node.core.providerHints["first"]?.map(\.webAddresses), [[direct]])
-        XCTAssertEqual(node.core.providerHints["second"]?.map(\.webAddresses), [[relayed(sim)]])
+        for root in ["first", "second"] {
+            XCTAssertEqual(answer(asker, root: root),
+                           [DiscoveredProvider(endpoint: peer.endpoint, webAddresses: [relayed(sim)])], root)
+        }
+    }
+
+    /// An answer too large for the asker's frame size is still sent: the
+    /// last records lose their addresses, then the last records go.
+    func testAnAnswerIsFittedToTheAskersFrameSize() throws {
+        let sim = Simulation()
+        let node = sim.node()
+        let long = (0..<4).map {
+            WebAddress(url: "wss://\($0)" + String(repeating: "a", count: 240), via: sim.discoveryKey(index: 99))
+        }
+        let announcers = (0..<8).map { DiscoveryScriptedPeer(sim, to: node, index: $0) }
+        for announcer in announcers {
+            announcer.send(.webAddresses(long))
+            announcer.send(.announceProvider(rootCID: "root", expiresAt: sim.unixSeconds + 60))
+        }
+
+        for (index, frame, expected) in [(8, UInt32(4096), 8), (9, UInt32(400), 3)] {
+            let asker = DiscoveryScriptedPeer(sim, to: node, index: index, maxFrameSize: frame)
+            asker.send(.webAddresses([]))
+            asker.send(.findProviders(rootCID: "root", requestID: 9))
+            let records = try XCTUnwrap(asker.takeProvidersWithAddresses().first?.records, "\(frame)")
+            XCTAssertEqual(records.count, expected, "\(frame)")
+            let carrying = records.prefix { $0.webAddresses == long }.count
+            XCTAssertTrue(records.dropFirst(carrying).allSatisfy(\.webAddresses.isEmpty), "\(frame)")
+            XCTAssertEqual(carrying > 0, frame == 4096, "\(frame)")
+        }
     }
 }
