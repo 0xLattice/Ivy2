@@ -22,6 +22,17 @@ extension SessionWireRecord {
               case .sessionKey? = Message.deserialize(data.payload, maxDataPayload: .max) else { return false }
         return true
     }
+
+    /// What a node sends first on every session: its key share and its web
+    /// addresses. The raw peers in these tests speak the protocol as a peer
+    /// from before both did, which ignores them.
+    var isSessionOpening: Bool {
+        guard case .data(let data) = self else { return false }
+        switch Message.deserialize(data.payload, maxDataPayload: .max) {
+        case .sessionKey?, .webAddresses?: return true
+        default: return false
+        }
+    }
 }
 
 /// A record behind its four-byte big-endian length, as it travels on a connection.
@@ -130,7 +141,7 @@ final class WireRawPeer {
             let body = Data(output.dropFirst(4).prefix(length))
             output = Data(output.dropFirst(4 + length))
             if let record = try? SessionWireRecord.deserialize(body),
-               includingKeyShare || !record.isSessionKeyOffer {
+               includingKeyShare || !record.isSessionOpening {
                 records.append(record)
             }
         }

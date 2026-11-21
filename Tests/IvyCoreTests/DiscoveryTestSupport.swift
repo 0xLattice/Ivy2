@@ -35,7 +35,8 @@ final class DiscoveryScriptedPeer {
         to node: Simulation.Node,
         index: Int,
         host: String? = nil,
-        listen: [ListenAddress]? = nil
+        listen: [ListenAddress]? = nil,
+        maxFrameSize: UInt32 = IvyConfig.defaultProtocolMaxFrameSize
     ) {
         self.sim = sim
         self.node = node
@@ -47,7 +48,8 @@ final class DiscoveryScriptedPeer {
         connection = sim.openRawConnection(to: node, fromHost: host)
 
         let metadata = PeerMetadata(
-            listenAddresses: listen ?? [ListenAddress(host: host, port: 4001)])
+            listenAddresses: listen ?? [ListenAddress(host: host, port: 4001)],
+            maxFrameSize: maxFrameSize)
         guard let encoded = metadata.encode(),
               let hello = try? SignedSessionHelloInitiator.sign(
                 SessionHelloInitiator(
@@ -144,6 +146,18 @@ final class DiscoveryScriptedPeer {
         take {
             if case .providers(let root, let id, let records) = $0 { return (root, id, records) } else { return nil }
         }
+    }
+
+    func takeProvidersWithAddresses() -> [(rootCID: String, requestID: UInt64, records: [ProviderRecord])] {
+        take {
+            if case .providersWithAddresses(let root, let id, let records) = $0 {
+                return (root, id, records)
+            } else { return nil }
+        }
+    }
+
+    func takeWebAddresses() -> [[WebAddress]] {
+        take { if case .webAddresses(let addresses) = $0 { return addresses } else { return nil } }
     }
 
     func takeNeighbors() -> [(endpoints: [PeerEndpoint], nonce: UInt64)] {

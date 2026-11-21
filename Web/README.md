@@ -115,6 +115,14 @@ The methods are the native `Ivy` actor's, with these differences:
   made, so nothing queues ahead of it.
 - Traffic is not recorded in a Tally ledger, which keeps its own clock; peers
   waiting for a serving slot are served in turn.
+- `discoverProviders` is the native `discoverProviderAddresses`: each
+  provider's endpoint with the `webAddresses` its record carries, the
+  `ws://`/`wss://` URLs this page can dial (`{ url }` where the provider
+  listens, `{ url, via }` to connect to peer `via` there and relay through
+  it). The core tells every session the page's own addresses, none unless
+  `setWebAddresses` is called, and that is what makes a node answer with
+  them. A node predating web addresses ignores this and answers without;
+  its providers come back with an empty list.
 
 ## Browser to browser
 

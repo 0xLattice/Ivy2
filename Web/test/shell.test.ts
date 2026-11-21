@@ -352,3 +352,22 @@ test('a stream that is refused or already closed is closed, once', async () => {
   assert.equal(deadCloses(), 1);
   assert.deepEqual(a.connectedPeers, []);
 });
+
+test('discoverProviders gives each provider the web addresses its record carries', async () => {
+  const provider = node({}, { listenPort: 4001 });
+  const browser = node();
+  await provider.start();
+  await browser.start();
+  provider.reportPublicAddress({ host: '8.8.2.1', port: 4001 });
+  const relay = node().localID;
+  const webAddresses = [{ url: 'wss://p.example/ivy' }, { url: 'wss://relay.example/ivy', via: relay }];
+  assert.throws(() => provider.setWebAddresses([{ url: 'https://p.example' }]));
+  assert.throws(() => provider.setWebAddresses([{ url: 'wss://p.example', via: 'not-a-key' }]));
+  provider.setWebAddresses(webAddresses);
+  provider.announceProvider('vol', Math.floor(Date.now() / 1000) + 60);
+  await join(browser, provider);
+
+  // The browser's core told the provider it speaks web addresses (an empty
+  // set), so the answer carries the provider's.
+  assert.deepEqual(await browser.discoverProviders('vol'), [{ ...endpoint(provider), webAddresses }]);
+});

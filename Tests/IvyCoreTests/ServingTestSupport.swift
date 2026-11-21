@@ -107,7 +107,7 @@ final class ServingRawPeer {
             let body = Data(unparsed.dropFirst(4).prefix(length))
             unparsed = Data(unparsed.dropFirst(4 + length))
             let record = try? SessionWireRecord.deserialize(body)
-            if record?.isSessionKeyOffer == true { continue }
+            if record?.isSessionOpening == true { continue }
             frameSizes.append(length)
             if let record { records.append(record) }
         }

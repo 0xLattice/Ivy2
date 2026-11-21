@@ -36,6 +36,13 @@ public struct IvyCore: Sendable {
     /// Connected endpoints the application says relay. A peer that does not
     /// relay ends the session of one that asks it to, so only these are asked.
     var relayingPeers: Set<PeerKey> = []
+    /// What `webAddresses` tells every session, and this node's own provider
+    /// records carry: the declared addresses, or the auto relays chosen.
+    var localWebAddresses: [WebAddress] = []
+    var declaredWebAddresses: [WebAddress] = []
+    var autoRelay = false
+    /// When sessions were last told this node's web addresses.
+    var webAddressesSentAt: Duration?
     var router: Router
 
     // MARK: Links and sessions
@@ -97,6 +104,9 @@ public struct IvyCore: Sendable {
     /// Remote sources grouped by record count, to find the heaviest without a scan.
     var providerSourcesByCount: [Int: Set<PeerID>] = [:]
     var providerRecordTotal = 0
+    /// The latest web addresses of each peer holding a record it gave for
+    /// itself: one copy a peer, however many records it holds.
+    var announcerWebAddresses: [PeerID: [WebAddress]] = [:]
     var pendingProviderQueries: [String: PendingProviderQuery] = [:]
     var providerSearches: [OpID: ProviderSearch] = [:]
     /// The `findNode` each root's provider searches are waiting on.
@@ -304,6 +314,10 @@ public struct IvyCore: Sendable {
     private mutating func stop() {
         isRunning = false
         timers.removeAll()
+        // The relays this run chose are not the next run's; what the caller
+        // declared and whether auto relay is on are kept.
+        localWebAddresses = declaredWebAddresses
+        webAddressesSentAt = nil
 
         failAllServing()
         for id in volumeFetches.keys.sorted() { finishVolumeFetch(id, .empty) }
@@ -392,6 +406,8 @@ public struct IvyCore: Sendable {
                 if let pending = pendingProviderQueries[rootCID] {
                     resolveProviderQuery(rootCID: rootCID, requestID: pending.requestID)
                 }
+            case .webAddresses:
+                refreshWebAddresses()
             case .volumeRequest(let requestID):
                 timeOutVolumeRequest(requestID: requestID)
             case .volumeWritable(let fetch):
@@ -483,7 +499,9 @@ public struct IvyCore: Sendable {
             }
             startLookup(target: target, waiter: .request(id))
         case .discoverProviders(let rootCID):
-            discoverProviders(id, rootCID: rootCID)
+            discoverProviders(id, rootCID: rootCID, withAddresses: false)
+        case .discoverProviderAddresses(let rootCID):
+            discoverProviders(id, rootCID: rootCID, withAddresses: true)
         case .recycleSession(let peer):
             complete(id, .flag(recycleSession(ifCurrent: peer)))
         case .disconnectSession(let peer):
@@ -532,6 +550,8 @@ public struct IvyCore: Sendable {
             reportDeficientContent(rootCID: rootCID, servedBy: peer)
         case .setContentSource(let present):
             hasContentSource = present
+        case .setWebAddresses(let addresses):
+            setWebAddresses(addresses)
         case let .setRelaying(peer, relays):
             guard let key = try? PeerKey(peer.publicKey) else { return }
             if relays, endpointSession(for: key) != nil {
@@ -539,6 +559,9 @@ public struct IvyCore: Sendable {
             } else {
                 relayingPeers.remove(key)
             }
+            refreshWebAddresses()
+        case .setAutoRelay(let enabled):
+            setAutoRelay(enabled)
         }
     }
 
@@ -574,6 +597,14 @@ public struct IvyCore: Sendable {
         return (providerHints[rootCID] ?? []).compactMap { hint in
             hint.expiresAt > now.unixSeconds && seen.insert(hint.peer).inserted ? hint.peer : nil
         }
+    }
+
+    /// The web addresses `peer`'s current session last advertised: nil when
+    /// it has no session or has sent none, which is how a peer that does
+    /// not speak web addresses looks.
+    public func webAddresses(of peer: PeerID) -> [WebAddress]? {
+        guard let key = try? PeerKey(peer.publicKey) else { return nil }
+        return sessions[key]?.webAddresses
     }
 
     /// The authenticated session currently selected for `peer`, if any.
@@ -638,6 +669,7 @@ enum TimerKind: Hashable, Sendable {
     case relayForward(LinkID)
     case neighbor(UInt64)
     case providerQuery(String)
+    case webAddresses
     case volumeRequest(UInt64)
     case volumeWritable(OpID)
     case serving(InboundContentRequest)

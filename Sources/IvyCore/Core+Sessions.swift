@@ -46,6 +46,9 @@ struct Session: Sendable {
     /// Set once both shares are exchanged: records sent are then MACed, not
     /// signed. A peer that never sends a share keeps the session signed.
     var macKeys: SessionMACKeys?
+    /// What the peer last sent in `webAddresses`; nil until it sends one,
+    /// and then its provider answers carry addresses.
+    var webAddresses: [WebAddress]?
     var didNotifyConnect = false
     /// The connect operation waiting for the application to see this session.
     var op: OpID?
@@ -513,6 +516,9 @@ extension IvyCore {
         session.op = pending.op
         sessions[peerKey] = session
         offerSessionKey(session.ref)
+        // A session replacing a relay's has not said its addresses yet. The
+        // new session is told once: by the refresh, or here.
+        if !refreshWebAddresses() { sendWebAddresses(on: session.ref) }
         let token = blockForDelivery(id, connected: peerKey)
         emit(.peerConnected(token, authenticatedPeer(session)))
     }
@@ -573,6 +579,13 @@ extension IvyCore {
         sessions[ref.key]?.keyShare = bytes
     }
 
+    /// Tells the peer this node's web addresses. Sent on every session, even
+    /// empty: a peer that sends none gets provider answers without them.
+    mutating func sendWebAddresses(on ref: SessionRef) {
+        guard config.mode.usesOverlayServices else { return }
+        enqueue(.webAddresses(localWebAddresses), on: ref, reserve: true)
+    }
+
     /// The peer's share, from a record already authenticated on `ref`.
     private mutating func acceptSessionKey(_ remoteShare: Data, on ref: SessionRef) {
         guard var session = sessions[ref.key], session.link == ref.link,
@@ -614,7 +627,7 @@ extension IvyCore {
         let key = ref.key
         sessions.removeValue(forKey: key)
         sessionKeyByLink.removeValue(forKey: ref.link)
-        relayingPeers.remove(key)
+        let wasRelaying = relayingPeers.remove(key) != nil
         if providerWalkSessions[key] == session.sessionID.bytes { providerWalkSessions.removeValue(forKey: key) }
         if session.role == .endpoint {
             router.removePeer(key.peerID)
@@ -637,6 +650,7 @@ extension IvyCore {
             }
         }
 
+        if wasRelaying { refreshWebAddresses() }
         guard reconnect, isRunning,
               !configuredEndpoints(for: key, role: session.role).isEmpty else { return }
         scheduleReconnect(peer: key.peerID, role: session.role)

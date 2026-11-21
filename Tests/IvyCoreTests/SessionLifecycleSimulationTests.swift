@@ -602,8 +602,8 @@ final class SessionLifecycleSimulationTests: XCTestCase {
         }
 
         let records = peer.takeDataRecords()
-        // Sequence 1 carried the node's MAC key share.
-        XCTAssertEqual(records.map(\.sequence), [2, 3, 4, 5, 6])
+        // Sequences 1 and 2 carried the node's MAC key share and web addresses.
+        XCTAssertEqual(records.map(\.sequence), [3, 4, 5, 6, 7])
         XCTAssertTrue(records.allSatisfy { $0.sessionID == peer.sessionID })
         XCTAssertTrue(records.allSatisfy {
             $0.isValid(sender: node.key, receiver: peer.key, using: SimulatedSignatureScheme(key: peer.key))

@@ -561,8 +561,39 @@ public actor Ivy {
         return endpoints
     }
 
+    /// `discoverProviders`, with the web addresses each provider's record
+    /// carries: what a browser can dial.
+    public func discoverProviderAddresses(rootCID: String) async -> [DiscoveredProvider] {
+        guard case .providers(let providers) = await self.await(
+            .discoverProviderAddresses(rootCID: rootCID)) else { return [] }
+        return providers
+    }
+
     public func providers(for rootCID: String) -> [PeerID] {
         core.providers(for: rootCID)
+    }
+
+    /// Sets the addresses browsers may reach this node at: every session is
+    /// told, and this node's provider records carry them. False, and nothing
+    /// changes, unless `WebAddress.isValidList(addresses)`.
+    @discardableResult
+    public func setWebAddresses(_ addresses: [WebAddress]) -> Bool {
+        guard WebAddress.isValidList(addresses) else { return false }
+        apply(.command(.setWebAddresses(addresses)))
+        return true
+    }
+
+    /// With no addresses set by `setWebAddresses`, advertises up to four
+    /// relays this node can be reached through: direct peers marked with
+    /// `setRelaying` that advertise an address of their own. Off by default.
+    public func setAutoRelay(_ enabled: Bool) {
+        apply(.command(.setAutoRelay(enabled)))
+    }
+
+    /// The web addresses `peer`'s current session last advertised; nil when
+    /// it has no session or never sent any (a peer predating them).
+    public func webAddresses(of peer: PeerID) -> [WebAddress]? {
+        core.webAddresses(of: peer)
     }
 
     /// The core's counters, for tests and operators.

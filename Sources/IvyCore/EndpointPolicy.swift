@@ -40,7 +40,8 @@ extension IvyCore {
     func isAcceptableDiscoveredEndpoint(
         _ endpoint: PeerEndpoint,
         provenance: EndpointProvenance,
-        from peer: PeerID
+        from peer: PeerID,
+        requireRoutableHost: Bool = true
     ) -> Bool {
         if case .referral = provenance, !config.mode.participatesInPublicDiscovery {
             return false
@@ -64,11 +65,12 @@ extension IvyCore {
             return false
         }
 
+        // Relaxed, a private or loopback host passes; nothing else does.
         if !allowsDiscoveredHost(
             host,
             provenance: provenance,
             fromObservedHost: endpointLink(for: peer)?.observedHost
-        ) {
+        ), requireRoutableHost || !(isPrivateUnicastHost(host) || isLoopbackHost(host)) {
             config.logger.warning("Rejecting \(source) endpoint \(endpoint.publicKey.prefix(16))… from \(peer.publicKey.prefix(16))…: non-routable address \(host)")
             return false
         }

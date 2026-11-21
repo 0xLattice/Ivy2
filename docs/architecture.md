@@ -197,10 +197,11 @@ Everything else is an addition, and an addition needs no version:
   encoding or its meaning.
 - Ivy sends a new message only to a session its caller names. Whether a peer
   speaks it is the application's to learn (its own hello) and to tell Ivy by
-  naming the peer; Ivy's hello carries no capabilities. The one exception is
-  `sessionKey`, which Ivy sends to every session itself: one side has to
-  speak first. Peers through 14.0.0 end the session on it, so this version
-  needs a peer of 14.1.0 or later.
+  naming the peer; Ivy's hello carries no capabilities. The exceptions are
+  `sessionKey` and `webAddresses` (tag 43), which Ivy sends to every session
+  itself: one side has to speak first. Every Ivy2 peer (2.0.0 on) ignores
+  a tag it does not know. A peer that sends
+  `webAddresses` has said it speaks `providersWithAddresses` (tag 44).
 - A message whose tag this version does not know is ignored: the session
   stays up and nothing is recorded against the peer. A known message that
   does not decode still ends the session as a signed protocol violation.
@@ -341,6 +342,53 @@ it. `stopProviding` drops the node's own record and any announcement not yet
 sent; records already sent expire on their own, since the wire has no
 withdrawal. Ivy does not republish: when and how often to announce a root again
 is the caller's choice.
+
+A peer may advertise up to four web addresses, `ws://` or `wss://` URLs of at
+most 256 printable ASCII bytes, for a browser that cannot dial a TCP endpoint.
+One without `via` is where the peer itself listens; one with `via` says
+"connect to peer `via` at this URL and relay through it". Every session is
+sent the node's set (`webAddresses`, tag 43) when it opens, empty if none, and
+again whenever `setWebAddresses` changes it; what a peer sent last replaces
+what it sent before. A provider's own records are answered with the
+addresses it sent last, kept once per provider however many records it
+holds; a node's own records carry its own. A record referred by an answer
+keeps the addresses it came with, and the same endpoint referred with other
+addresses is another route beside it, as another endpoint would be, so a
+referral cannot replace a provider's addresses. A referred record whose
+endpoint the endpoint policy refuses (a private or loopback host) is still
+kept when it carries web addresses, for those alone: Ivy never dials that
+endpoint, `discoverProviders` and the `providers` answer (tag 41) never name
+it, and only `discoverProviderAddresses` and tag 44 do. Without addresses it is
+dropped as before. A
+`findProviders` from a peer that has sent tag 43 is answered with
+`providersWithAddresses` (tag 44), the records of `providers` (tag 41) each
+followed by its addresses; any other peer is answered with tag 41 exactly as
+before, so peers predating web addresses never see tag 44 and ignore tag 43.
+Addresses are the advertiser's unauthenticated claim, as a record's endpoint
+is: the dialer proves the key when it connects. They play no part in which
+records are kept, evicted or counted, and are bounded with the records that
+carry them. An answer too large for the asker's frame size drops the last
+records' addresses, then the last records. `discoverProviderAddresses` returns them; `discoverProviders`
+does not.
+
+A node with no addresses of its own may advertise relays instead, as libp2p's
+AutoRelay does: with `setAutoRelay(true)` and no declared addresses, it
+advertises up to four, one for each direct session the application marked with
+`setRelaying` whose peer advertised an address without `via`, as that address
+with `via` the relay. Half the slots keep their relay while it remains a
+candidate, taken by the first relays in the current list; the rest always go to the candidates first
+by SHA-256 of this node's key then the relay's. So no key can be ground to be
+every node's relay, nodes spread over relays, and relays that arrived first
+cannot hold every slot. A node targeted by relays whose keys were ground to rank
+first for it can still advertise only those; at worst browsers cannot reach it,
+as when a relay refuses to relay, and nothing it advertises is corrupted. The
+choice is made again when a session opens or a relay's ends, a relay's
+addresses change, or `setRelaying`, `setAutoRelay` or the declared addresses
+change, and sessions are told only when the result changes. A change other
+peers caused is told at most once every 10 seconds, the latest state when the
+interval ends; `setWebAddresses` and `setAutoRelay` take effect at once. A new
+session is told once. A declared list always wins, and auto relay is off by
+default.
 
 `providerReach` chooses what walks may do. `.walk`, the default, dials peers
 not yet connected, at most `maxProviderWalkSessions` open or being dialed and
