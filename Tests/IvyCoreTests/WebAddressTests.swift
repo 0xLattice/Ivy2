@@ -130,6 +130,33 @@ final class WebAddressTests: XCTestCase {
                        [DiscoveredProvider(endpoint: announcer.endpoint, webAddresses: [direct])])
     }
 
+    /// Routes that differ only in their addresses are one route to a peer
+    /// answered without addresses: each endpoint once, so none crowds out
+    /// another.
+    func testAnAnswerWithoutAddressesNamesEachEndpointOnce() throws {
+        let sim = Simulation()
+        let node = sim.node()
+        let first = DiscoveryScriptedPeer(sim, to: node, index: 0)
+        let second = DiscoveryScriptedPeer(sim, to: node, index: 1)
+        let old = DiscoveryScriptedPeer(sim, to: node, index: 2)
+        let expiry = sim.unixSeconds + 60
+        let shared = sim.discoveryUnreachableEndpoint(index: 0)
+        let other = sim.discoveryUnreachableEndpoint(index: 0, host: "7.9.0.1")
+
+        _ = search(sim, node, root: "root", peers: [first, second, old], answers: [
+            ObjectIdentifier(first): [
+                ProviderRecord(endpoint: shared, expiresAt: expiry, webAddresses: [direct]),
+                ProviderRecord(endpoint: other, expiresAt: expiry),
+            ],
+            ObjectIdentifier(second): [ProviderRecord(endpoint: shared, expiresAt: expiry)],
+        ])
+
+        old.send(.findProviders(rootCID: "root", requestID: 9))
+        let records = try XCTUnwrap(old.takeProviders().first?.records)
+        XCTAssertEqual(Set(records.map(\.endpoint)), [shared, other])
+        XCTAssertEqual(records.count, 2)
+    }
+
     /// A provider's records are answered with the addresses it sent last,
     /// whenever it announced them; this node's own with its own.
     func testRecordsCarryTheProvidersLatestAddresses() {

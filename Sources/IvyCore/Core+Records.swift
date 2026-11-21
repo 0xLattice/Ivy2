@@ -189,16 +189,18 @@ extension IvyCore {
     mutating func handleFindProviders(rootCID: String, requestID: UInt64, from peer: PeerID) {
         guard config.mode.usesOverlayServices else { return }
         evictExpiredProviders(rootCID: rootCID)
-        let records = providerRecordsForWire(providerHints[rootCID] ?? [])
+        let hints = providerHints[rootCID] ?? []
         // Only a peer that has sent `webAddresses` knows the answer with them.
         guard let session = endpointSession(for: peer), session.webAddresses != nil else {
-            fireToPeer(peer, .providers(rootCID: rootCID, requestID: requestID, records: records))
+            fireToPeer(peer, .providers(
+                rootCID: rootCID, requestID: requestID, records: providerRecordsForWire(hints)))
             return
         }
         fireToPeer(peer, .providersWithAddresses(
             rootCID: rootCID,
             requestID: requestID,
-            records: fittingProviderRecords(records, rootCID: rootCID, link: session.link)))
+            records: fittingProviderRecords(
+                providerRecordsForWire(hints, withAddresses: true), rootCID: rootCID, link: session.link)))
     }
 
     /// `records` cut to fit one `providersWithAddresses` on `link`: the last
@@ -223,7 +225,11 @@ extension IvyCore {
             total += size(fitted[index])
         }
         while total > budget, let last = fitted.popLast() { total -= size(last) }
-        return fitted
+        // Routes that differed only in the addresses dropped are one route.
+        var seen: Set<DiscoveredProvider> = []
+        return fitted.filter {
+            seen.insert(DiscoveredProvider(endpoint: $0.endpoint, webAddresses: $0.webAddresses)).inserted
+        }
     }
 
     /// At most `maxNeighborCount` records, every identity's first route
@@ -231,11 +237,19 @@ extension IvyCore {
     /// a key with more providers than one answer holds names a different
     /// sample to each asker, so none is named to every asker, and a key
     /// cannot be held by grinding identities that sort first.
-    mutating func providerRecordsForWire(_ hints: [ProviderHint]) -> [ProviderRecord] {
+    /// Without addresses, routes that differ only in them are one route:
+    /// the first of each endpoint.
+    mutating func providerRecordsForWire(
+        _ hints: [ProviderHint], withAddresses: Bool = false
+    ) -> [ProviderRecord] {
+        var seen: Set<PeerEndpoint> = []
         let records = hints.compactMap { hint -> ProviderRecord? in
-            guard let endpoint = hint.endpoint else { return nil }
+            guard let endpoint = hint.endpoint,
+                  withAddresses || seen.insert(endpoint).inserted else { return nil }
             return ProviderRecord(
-                endpoint: endpoint, expiresAt: hint.expiresAt, webAddresses: providerWebAddresses(hint))
+                endpoint: endpoint,
+                expiresAt: hint.expiresAt,
+                webAddresses: withAddresses ? providerWebAddresses(hint) : [])
         }.sorted {
             ($0.endpoint.publicKey, $0.endpoint.host, $0.endpoint.port)
                 < ($1.endpoint.publicKey, $1.endpoint.host, $1.endpoint.port)
