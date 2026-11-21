@@ -130,6 +130,48 @@ final class WebAddressTests: XCTestCase {
                        [DiscoveredProvider(endpoint: announcer.endpoint, webAddresses: [direct])])
     }
 
+    /// A referred provider at a private or loopback endpoint is kept for its
+    /// web addresses, which a browser dials instead; the endpoint itself is
+    /// never dialed nor named without them. With no addresses it is dropped.
+    func testAnUndialableEndpointIsKeptOnlyForItsWebAddresses() throws {
+        let sim = Simulation()
+        let node = sim.node()
+        let responder = DiscoveryScriptedPeer(sim, to: node, index: 0)
+        let asker = DiscoveryScriptedPeer(sim, to: node, index: 1)
+        let peers = [responder, asker]
+        let expiry = sim.unixSeconds + 60
+        let loopback = sim.discoveryUnreachableEndpoint(index: 0, host: "127.0.0.1")
+        let homelab = sim.discoveryUnreachableEndpoint(index: 1, host: "192.168.1.20")
+        let bare = sim.discoveryUnreachableEndpoint(index: 2, host: "10.0.0.5")
+        let addresses = [relayed(sim)]
+
+        let found = try XCTUnwrap(search(sim, node, root: "root", peers: peers, answers: [
+            ObjectIdentifier(responder): [
+                ProviderRecord(endpoint: loopback, expiresAt: expiry, webAddresses: addresses),
+                ProviderRecord(endpoint: homelab, expiresAt: expiry, webAddresses: [direct]),
+                ProviderRecord(endpoint: bare, expiresAt: expiry),
+            ],
+        ]))
+        XCTAssertEqual(Set(found), [
+            DiscoveredProvider(endpoint: loopback, webAddresses: addresses),
+            DiscoveredProvider(endpoint: homelab, webAddresses: [direct]),
+        ])
+
+        // Native callers dial what they are given: none of these.
+        XCTAssertEqual(sim.await(.discoverProviders(rootCID: "root"), on: node)?.endpoints, [])
+        _ = sim.await(.fetchVolume(rootCID: "root", maximumArchiveBytes: 1 << 20, maximumEntries: 16),
+                      on: node, timeout: .seconds(30))
+        let dialed = sim.trace.compactMap { entry -> String? in
+            if case .dial(_, let endpoint) = entry.effect { return endpoint.host } else { return nil }
+        }
+        XCTAssertTrue(Set(dialed).isDisjoint(with: ["127.0.0.1", "192.168.1.20", "10.0.0.5"]), "\(dialed)")
+
+        asker.send(.findProviders(rootCID: "root", requestID: 8))
+        XCTAssertEqual(asker.takeProviders().first?.records, [], "tag 41 names neither")
+        asker.send(.webAddresses([]))
+        XCTAssertEqual(Set(try XCTUnwrap(answer(asker, root: "root"))), Set(found))
+    }
+
     /// Routes that differ only in their addresses are one route to a peer
     /// answered without addresses: each endpoint once, so none crowds out
     /// another.

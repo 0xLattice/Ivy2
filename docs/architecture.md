@@ -354,7 +354,12 @@ addresses it sent last, kept once per provider however many records it
 holds; a node's own records carry its own. A record referred by an answer
 keeps the addresses it came with, and the same endpoint referred with other
 addresses is another route beside it, as another endpoint would be, so a
-referral cannot replace a provider's addresses. A
+referral cannot replace a provider's addresses. A referred record whose
+endpoint the endpoint policy refuses (a private or loopback host) is still
+kept when it carries web addresses, for those alone: Ivy never dials that
+endpoint, `discoverProviders` and the `providers` answer (tag 41) never name
+it, and only `discoverProviderAddresses` and tag 44 do. Without addresses it is
+dropped as before. A
 `findProviders` from a peer that has sent tag 43 is answered with
 `providersWithAddresses` (tag 44), the records of `providers` (tag 41) each
 followed by its addresses; any other peer is answered with tag 41 exactly as

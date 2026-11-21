@@ -18,6 +18,10 @@ struct ProviderHint: Sendable, Equatable {
     /// `announcerWebAddresses`. Part of a route's identity, so a referral
     /// naming a known endpoint with other addresses sits beside it.
     var webAddresses: [WebAddress] = []
+    /// False for a referred endpoint the endpoint policy refuses to dial (a
+    /// private or loopback host), kept only for its web addresses: no TCP
+    /// dial is made to it and no answer without addresses names it.
+    var dialable = true
 }
 
 /// One provider search for a root, shared by every search asking for it.
@@ -54,7 +58,8 @@ extension IvyCore {
         // This node's own record is no answer: a provider looking up a root it
         // provides is looking for the others, so its record neither returns
         // nor stands in for the network's answer.
-        let cached = cachedProviders(rootCID: rootCID).filter { $0.endpoint.publicKey != localKey.hex }
+        let cached = cachedProviders(rootCID: rootCID, dialableOnly: !withAddresses)
+            .filter { $0.endpoint.publicKey != localKey.hex }
         // Nor is a record naming a peer already connected: it tells the
         // caller of no one new, so only a record naming a peer this node has
         // no session with answers without asking the network.
@@ -148,17 +153,23 @@ extension IvyCore {
                 endpoint: hint.endpoint,
                 expiresAt: hint.expiresAt,
                 source: hint.source,
-                webAddresses: hint.webAddresses)
+                webAddresses: hint.webAddresses,
+                dialable: hint.dialable)
         }
         let providers = hints.compactMap { hint in
             hint.endpoint.map { DiscoveredProvider(endpoint: $0, webAddresses: hint.webAddresses) }
         }
-        for waiter in pending.waiters { finishProviderSearch(waiter, providers) }
+        let dialable = hints.filter(\.dialable).compactMap(\.endpoint)
+        for waiter in pending.waiters { finishProviderSearch(waiter, providers, dialable: dialable) }
     }
 
     /// Ends a search and tells its waiter. Ending the last search for a
     /// root ends its walk and its round.
-    mutating func finishProviderSearch(_ id: OpID, _ providers: [DiscoveredProvider]) {
+    /// `dialable` are the endpoints of `providers` a TCP dial may be made to:
+    /// all that a caller without web addresses is told.
+    mutating func finishProviderSearch(
+        _ id: OpID, _ providers: [DiscoveredProvider], dialable: [PeerEndpoint] = []
+    ) {
         guard let search = providerSearches.removeValue(forKey: id) else { return }
         if var pending = pendingProviderQueries[search.rootCID],
            let index = pending.waiters.firstIndex(of: id) {
@@ -175,13 +186,11 @@ extension IvyCore {
         }
         switch search.waiter {
         case .request(let request, let cached, let withAddresses):
-            let found = uniqueProviders(cached + providers)
             complete(request, withAddresses
-                ? .providers(found)
-                : .endpoints(uniqueProviderEndpoints(found.map(\.endpoint))))
+                ? .providers(uniqueProviders(cached + providers))
+                : .endpoints(uniqueProviderEndpoints(cached.map(\.endpoint) + dialable)))
         case .volumeFetch(let fetch):
-            volumeFetchProviderSearchFinished(
-                fetch, search: id, endpoints: providers.map(\.endpoint))
+            volumeFetchProviderSearchFinished(fetch, search: id, endpoints: uniqueProviderEndpoints(dialable))
         }
     }
 
@@ -246,7 +255,7 @@ extension IvyCore {
         var seen: Set<PeerEndpoint> = []
         let records = hints.compactMap { hint -> ProviderRecord? in
             guard let endpoint = hint.endpoint,
-                  withAddresses || seen.insert(endpoint).inserted else { return nil }
+                  withAddresses || (hint.dialable && seen.insert(endpoint).inserted) else { return nil }
             return ProviderRecord(
                 endpoint: endpoint,
                 expiresAt: hint.expiresAt,
@@ -285,11 +294,13 @@ extension IvyCore {
             // A record naming the peer that answers is its own advertisement,
             // as when it announces: a private address it is seen from holds.
             let names = (try? PeerKey(endpoint.publicKey))?.hex == peer.publicKey
+            let provenance: EndpointProvenance = names ? .selfAdvertisement : .referral("provider")
+            // An endpoint the policy will not dial is kept only for the web
+            // addresses a browser dials instead, and is never dialed itself.
+            let dialable = isAcceptableDiscoveredEndpoint(endpoint, provenance: provenance, from: peer)
             guard providerExpiryIsValid(record.expiresAt),
-                  isAcceptableDiscoveredEndpoint(
-                    endpoint,
-                    provenance: names ? .selfAdvertisement : .referral("provider"),
-                    from: peer),
+                  dialable || (!record.webAddresses.isEmpty && isAcceptableDiscoveredEndpoint(
+                    endpoint, provenance: provenance, from: peer, requireRoutableHost: false)),
                   let key = try? PeerKey(endpoint.publicKey) else { continue }
             let canonical = PeerEndpoint(
                 publicKey: key.hex,
@@ -300,7 +311,8 @@ extension IvyCore {
                 endpoint: canonical,
                 expiresAt: record.expiresAt,
                 source: peer,
-                webAddresses: record.webAddresses))
+                webAddresses: record.webAddresses,
+                dialable: dialable))
         }
 
         pending.responsesByPeer[peer.publicKey] = boundedProviderHints(accepted, rootCID: rootCID)
@@ -454,13 +466,14 @@ extension IvyCore {
         setProviderHints(hints.filter { $0.source != localID }, rootCID: rootCID)
     }
 
+    /// The endpoints a TCP dial may be made to.
     mutating func cachedProviderEndpoints(rootCID: String) -> [PeerEndpoint] {
-        uniqueProviderEndpoints(cachedProviders(rootCID: rootCID).map(\.endpoint))
+        uniqueProviderEndpoints(cachedProviders(rootCID: rootCID, dialableOnly: true).map(\.endpoint))
     }
 
-    mutating func cachedProviders(rootCID: String) -> [DiscoveredProvider] {
+    mutating func cachedProviders(rootCID: String, dialableOnly: Bool = false) -> [DiscoveredProvider] {
         evictExpiredProviders(rootCID: rootCID)
-        return uniqueProviders((providerHints[rootCID] ?? []).compactMap { hint in
+        return uniqueProviders((providerHints[rootCID] ?? []).filter { !dialableOnly || $0.dialable }.compactMap { hint in
             hint.endpoint.map { DiscoveredProvider(endpoint: $0, webAddresses: providerWebAddresses(hint)) }
         })
     }
@@ -482,7 +495,8 @@ extension IvyCore {
         endpoint: PeerEndpoint?,
         expiresAt: UInt64,
         source: PeerID? = nil,
-        webAddresses: [WebAddress] = []
+        webAddresses: [WebAddress] = [],
+        dialable: Bool = true
     ) {
         let source = source ?? peer
         // A provider's own record reads its provider's latest addresses,
@@ -492,7 +506,8 @@ extension IvyCore {
             endpoint: endpoint,
             expiresAt: expiresAt,
             source: source,
-            webAddresses: source == peer ? [] : webAddresses)
+            webAddresses: source == peer ? [] : webAddresses,
+            dialable: dialable)
         defer {
             if source == peer, peer != localID, providerRecordCounts[peer] != nil {
                 announcerWebAddresses[peer] = webAddresses

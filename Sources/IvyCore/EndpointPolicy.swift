@@ -40,7 +40,8 @@ extension IvyCore {
     func isAcceptableDiscoveredEndpoint(
         _ endpoint: PeerEndpoint,
         provenance: EndpointProvenance,
-        from peer: PeerID
+        from peer: PeerID,
+        requireRoutableHost: Bool = true
     ) -> Bool {
         if case .referral = provenance, !config.mode.participatesInPublicDiscovery {
             return false
@@ -64,7 +65,7 @@ extension IvyCore {
             return false
         }
 
-        if !allowsDiscoveredHost(
+        if requireRoutableHost, !allowsDiscoveredHost(
             host,
             provenance: provenance,
             fromObservedHost: endpointLink(for: peer)?.observedHost
