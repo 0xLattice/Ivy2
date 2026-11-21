@@ -15,7 +15,7 @@ final class AutoRelayTests: XCTestCase {
         private var nextIndex = 1
 
         init() {
-            node = sim.node()
+            node = sim.discoveryNode()
             observer = DiscoveryScriptedPeer(sim, to: node, index: 0)
             sim.send(.command(.setAutoRelay(true)), to: node)
         }
@@ -30,8 +30,10 @@ final class AutoRelayTests: XCTestCase {
             return peer
         }
 
-        /// What the node last told its sessions.
+        /// What the node last told its sessions, once changes other peers
+        /// caused have waited out their interval.
         func advertised() -> [WebAddress] {
+            sim.run(for: IvyCore.webAddressesInterval + .seconds(1))
             if let latest = observer.takeWebAddresses().last { last = latest }
             return last
         }
@@ -42,6 +44,10 @@ final class AutoRelayTests: XCTestCase {
 
         func best(_ peers: [DiscoveryScriptedPeer], _ count: Int) -> Set<PeerKey> {
             Set(peers.sorted { rank($0).lexicographicallyPrecedes(rank($1)) }.prefix(count).map(\.key))
+        }
+
+        func peers(_ all: [DiscoveryScriptedPeer], excluding keys: Set<PeerKey>) -> [DiscoveryScriptedPeer] {
+            all.filter { !keys.contains($0.key) }
         }
     }
 
@@ -68,30 +74,63 @@ final class AutoRelayTests: XCTestCase {
         }
     }
 
-    /// Choices hold while they stay candidates, whatever arrives; a lost one
-    /// is replaced, and a relay's changed addresses or `setRelaying(false)`
-    /// take effect at once.
-    func testChoicesAreStickyAndFollowEachRelay() {
+    /// Half the slots hold their relays, the oldest first, while they stay
+    /// candidates; the other half always go to the best-ranked, so relays
+    /// that arrive first cannot keep them all. A lost relay is replaced, and
+    /// a relay's changed addresses or `setRelaying(false)` take effect.
+    func testHalfTheSlotsAreStickyAndEachRelayIsFollowed() {
         let f = Fixture()
         let first = (0..<4).map { _ in f.peer() }
-        XCTAssertEqual(vias(f.advertised()), Set(first.map(\.key)))
+        let initial = f.advertised().compactMap(\.via)
+        XCTAssertEqual(Set(initial), Set(first.map(\.key)))
+
         let late = (0..<6).map { _ in f.peer() }
-        XCTAssertEqual(vias(f.advertised()), Set(first.map(\.key)), "sticky")
+        let all = first + late
+        let kept = Set(initial.prefix(2))
+        let now = f.advertised()
+        XCTAssertEqual(vias(now), kept.union(f.best(f.peers(all, excluding: kept), 2)))
 
-        first[0].close()
-        f.sim.run(for: .milliseconds(10))
+        let lost = all.first { $0.key == now[0].via }!
+        lost.close()
         let replaced = vias(f.advertised())
-        XCTAssertEqual(replaced, Set(first.dropFirst().map(\.key)).union(f.best(late, 1)))
+        XCTAssertEqual(replaced.count, 4)
+        XCTAssertFalse(replaced.contains(lost.key))
 
-        first[1].send(.webAddresses([WebAddress(url: "wss://moved.example")]))
-        XCTAssertTrue(f.advertised().contains(WebAddress(url: "wss://moved.example", via: first[1].key)))
+        let moving = all.first { $0.key == f.advertised()[0].via }!
+        moving.send(.webAddresses([WebAddress(url: "wss://moved.example")]))
+        XCTAssertTrue(f.advertised().contains(WebAddress(url: "wss://moved.example", via: moving.key)))
+        moving.send(.webAddresses([]))
+        XCTAssertFalse(vias(f.advertised()).contains(moving.key))
+        let unmarked = all.first { $0.key == f.advertised()[0].via }!
+        f.sim.send(.command(.setRelaying(unmarked.peer, false)), to: f.node)
+        XCTAssertFalse(vias(f.advertised()).contains(unmarked.key))
+    }
 
-        first[2].send(.webAddresses([]))
-        XCTAssertFalse(vias(f.advertised()).contains(first[2].key))
-        f.sim.send(.command(.setRelaying(first[3].peer, false)), to: f.node)
-        let now = vias(f.advertised())
-        XCTAssertFalse(now.contains(first[3].key))
-        XCTAssertEqual(now.count, 4)
+    /// A relay that flaps makes the node tell its sessions at most once an
+    /// interval, and the last state always goes out.
+    func testAFlappingRelayIsCoalesced() throws {
+        let f = Fixture()
+        let relay = f.peer()
+        XCTAssertEqual(vias(f.advertised()), [relay.key])
+        for index in 0..<5 {
+            relay.send(.webAddresses([WebAddress(url: "wss://flap\(index).example")]))
+            f.sim.run(for: .milliseconds(100))
+        }
+        f.sim.run(for: IvyCore.webAddressesInterval + .seconds(1))
+        let sent = f.observer.takeWebAddresses()
+        XCTAssertLessThanOrEqual(sent.count, 2)
+        XCTAssertEqual(sent.last, [WebAddress(url: "wss://flap4.example", via: relay.key)])
+    }
+
+    /// A session that opens is told this node's addresses exactly once.
+    func testANewSessionIsToldOnce() {
+        let f = Fixture()
+        let relay = f.peer()
+        let current = f.advertised()
+        XCTAssertEqual(vias(current), [relay.key])
+        let newcomer = DiscoveryScriptedPeer(f.sim, to: f.node, index: 50)
+        f.sim.run(for: IvyCore.webAddressesInterval + .seconds(1))
+        XCTAssertEqual(newcomer.takeWebAddresses(), [current])
     }
 
     /// A declared list wins; with auto relay off nothing is advertised.

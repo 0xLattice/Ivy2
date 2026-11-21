@@ -370,13 +370,20 @@ A node with no addresses of its own may advertise relays instead, as libp2p's
 AutoRelay does: with `setAutoRelay(true)` and no declared addresses, it
 advertises up to four, one for each direct session the application marked with
 `setRelaying` whose peer advertised an address without `via`, as that address
-with `via` the relay. A relay stays chosen while it remains a candidate; a
-vacancy goes to the candidate first by SHA-256 of this node's key then the
-relay's, so no key can be ground to be every node's relay and nodes spread over
-relays. The choice is made again when a session opens or a relay's ends, a
-relay's addresses change, `setRelaying` or `setAutoRelay` changes, or the
-declared addresses do; sessions are told only when the result changes. A
-declared list always wins, and auto relay is off by default.
+with `via` the relay. Half the slots keep their relay while it remains a
+candidate, the oldest choices first; the rest always go to the candidates first
+by SHA-256 of this node's key then the relay's. So no key can be ground to be
+every node's relay, nodes spread over relays, and relays that arrived first
+cannot hold every slot. A node targeted by relays whose keys were ground to rank
+first for it can still advertise only those; at worst browsers cannot reach it,
+as when a relay refuses to relay, and nothing it advertises is corrupted. The
+choice is made again when a session opens or a relay's ends, a relay's
+addresses change, or `setRelaying`, `setAutoRelay` or the declared addresses
+change, and sessions are told only when the result changes. A change other
+peers caused is told at most once every 10 seconds, the latest state when the
+interval ends; `setWebAddresses` and `setAutoRelay` take effect at once. A new
+session is told once. A declared list always wins, and auto relay is off by
+default.
 
 `providerReach` chooses what walks may do. `.walk`, the default, dials peers
 not yet connected, at most `maxProviderWalkSessions` open or being dialed and

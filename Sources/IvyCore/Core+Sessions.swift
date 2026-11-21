@@ -516,9 +516,9 @@ extension IvyCore {
         session.op = pending.op
         sessions[peerKey] = session
         offerSessionKey(session.ref)
-        sendWebAddresses(on: session.ref)
-        // A session replacing a relay's has not said its addresses yet.
-        refreshWebAddresses()
+        // A session replacing a relay's has not said its addresses yet. The
+        // new session is told once: by the refresh, or here.
+        if !refreshWebAddresses() { sendWebAddresses(on: session.ref) }
         let token = blockForDelivery(id, connected: peerKey)
         emit(.peerConnected(token, authenticatedPeer(session)))
     }

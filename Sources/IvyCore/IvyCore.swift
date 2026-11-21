@@ -41,6 +41,8 @@ public struct IvyCore: Sendable {
     var localWebAddresses: [WebAddress] = []
     var declaredWebAddresses: [WebAddress] = []
     var autoRelay = false
+    /// When sessions were last told this node's web addresses.
+    var webAddressesSentAt: Duration?
     var router: Router
 
     // MARK: Links and sessions
@@ -400,6 +402,8 @@ public struct IvyCore: Sendable {
                 if let pending = pendingProviderQueries[rootCID] {
                     resolveProviderQuery(rootCID: rootCID, requestID: pending.requestID)
                 }
+            case .webAddresses:
+                refreshWebAddresses()
             case .volumeRequest(let requestID):
                 timeOutVolumeRequest(requestID: requestID)
             case .volumeWritable(let fetch):
@@ -661,6 +665,7 @@ enum TimerKind: Hashable, Sendable {
     case relayForward(LinkID)
     case neighbor(UInt64)
     case providerQuery(String)
+    case webAddresses
     case volumeRequest(UInt64)
     case volumeWritable(OpID)
     case serving(InboundContentRequest)

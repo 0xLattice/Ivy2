@@ -375,26 +375,45 @@ extension IvyCore {
     mutating func setWebAddresses(_ addresses: [WebAddress]) {
         guard WebAddress.isValidList(addresses) else { return }
         declaredWebAddresses = addresses
-        refreshWebAddresses()
+        refreshWebAddresses(immediately: true)
     }
 
     mutating func setAutoRelay(_ enabled: Bool) {
         autoRelay = enabled
-        refreshWebAddresses()
+        refreshWebAddresses(immediately: true)
     }
+
+    /// The least time between two re-advertisements other peers' changes
+    /// cause: a relay that flaps does not make this node flood its sessions.
+    static let webAddressesInterval: Duration = .seconds(10)
 
     /// Recomputes what this node advertises: its declared addresses, or with
     /// none and auto relay on, relays it can be reached through. On a change
     /// every session is told, and this node's own records carry the new set.
-    mutating func refreshWebAddresses() {
+    /// A change other peers caused waits out `webAddressesInterval` since the
+    /// last, then the state at that time is sent. True when sessions were told.
+    @discardableResult
+    mutating func refreshWebAddresses(immediately: Bool = false) -> Bool {
         let addresses = !declaredWebAddresses.isEmpty ? declaredWebAddresses
             : autoRelay ? autoRelayAddresses() : []
-        guard addresses != localWebAddresses else { return }
+        guard addresses != localWebAddresses else { return false }
+        guard isRunning else {
+            localWebAddresses = addresses
+            return false
+        }
+        if !immediately, let last = webAddressesSentAt,
+           now.uptime < last + Self.webAddressesInterval {
+            if !timers.isSet(.webAddresses) {
+                timers.set(.webAddresses, at: last + Self.webAddressesInterval)
+            }
+            return false
+        }
         localWebAddresses = addresses
-        guard isRunning else { return }
+        webAddressesSentAt = now.uptime
         for key in sessions.keys.sorted() {
             if let ref = sessions[key]?.ref { sendWebAddresses(on: ref) }
         }
+        return true
     }
 
     /// Up to `WebAddress.maxCount` relays, as libp2p's AutoRelay picks them:
@@ -409,14 +428,17 @@ extension IvyCore {
                   let url = session.webAddresses?.first(where: { $0.via == nil })?.url else { continue }
             urls[key] = url
         }
-        var chosen = localWebAddresses.compactMap(\.via).filter { urls[$0] != nil }
+        // Only half the slots are kept, the oldest choices first: the rest
+        // always go by rank, so relays that hold on cannot fill them all.
+        var chosen = Array(localWebAddresses.compactMap(\.via).filter { urls[$0] != nil }
+            .prefix(WebAddress.maxCount / 2))
         let rank = { (key: PeerKey) in
             Array(SHA256.hash(data: self.localKey.rawRepresentation + key.rawRepresentation))
         }
-        let vacancies = urls.keys.filter { !chosen.contains($0) }
+        let ranked = urls.keys.filter { !chosen.contains($0) }
             .map { (key: $0, rank: rank($0)) }
             .sorted { $0.rank.lexicographicallyPrecedes($1.rank) }
-        chosen += vacancies.prefix(max(0, WebAddress.maxCount - chosen.count)).map(\.key)
+        chosen += ranked.prefix(WebAddress.maxCount - chosen.count).map(\.key)
         return chosen.prefix(WebAddress.maxCount).compactMap { key in
             urls[key].map { WebAddress(url: $0, via: key) }
         }
