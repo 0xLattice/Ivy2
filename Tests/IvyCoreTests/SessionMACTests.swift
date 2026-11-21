@@ -167,10 +167,11 @@ final class SessionMACTests: XCTestCase {
         XCTAssertEqual(b.received.map(\.message.payload), [Data([0]), Data([1]), Data([2])])
         XCTAssertEqual(a.received.map(\.message.payload), [Data([9])])
 
-        // A handshake record, the signed share, then MACed records only.
+        // A handshake record, the signed share and web addresses, then
+        // MACed records only.
         let tags = recordTags(sim, by: a, since: start)
-        XCTAssertEqual(Array(tags.prefix(3)), [1, 3, 4], "\(tags)")
-        XCTAssertEqual(Set(tags.dropFirst(3)), [5], "\(tags)")
+        XCTAssertEqual(Array(tags.prefix(4)), [1, 3, 4, 4], "\(tags)")
+        XCTAssertEqual(Set(tags.dropFirst(4)), [5], "\(tags)")
         XCTAssertEqual(a.ledger.violations(of: b.peer), 0)
         XCTAssertEqual(b.ledger.violations(of: a.peer), 0)
     }

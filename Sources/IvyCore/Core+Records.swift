@@ -12,6 +12,9 @@ struct ProviderHint: Sendable, Equatable {
     /// The authenticated peer whose quota this record counts against: the
     /// announcer, or the responder that referred it.
     let source: PeerID
+    /// The announcer's web addresses, or those the referral carried. They
+    /// play no part in which records are kept.
+    var webAddresses: [WebAddress] = []
 }
 
 /// One provider search for a root, shared by every search asking for it.
@@ -27,7 +30,7 @@ struct PendingProviderQuery: Sendable {
 }
 
 enum ProviderSearchWaiter: Sendable, Equatable {
-    case request(RequestID, cached: [PeerEndpoint])
+    case request(RequestID, cached: [DiscoveredProvider], withAddresses: Bool = false)
     case volumeFetch(OpID)
 }
 
@@ -41,21 +44,23 @@ struct ProviderSearch: Sendable {
 extension IvyCore {
     // MARK: - Searching
 
-    mutating func discoverProviders(_ request: RequestID, rootCID: String) {
+    mutating func discoverProviders(_ request: RequestID, rootCID: String, withAddresses: Bool) {
         guard config.mode.usesOverlayServices, MessageLimits.accepts(rootCID) else {
-            return complete(request, .endpoints([]))
+            return complete(request, withAddresses ? .providers([]) : .endpoints([]))
         }
         // This node's own record is no answer: a provider looking up a root it
         // provides is looking for the others, so its record neither returns
         // nor stands in for the network's answer.
-        let cached = cachedProviderEndpoints(rootCID: rootCID).filter { $0.publicKey != localKey.hex }
+        let cached = cachedProviders(rootCID: rootCID).filter { $0.endpoint.publicKey != localKey.hex }
         // Nor is a record naming a peer already connected: it tells the
         // caller of no one new, so only a record naming a peer this node has
         // no session with answers without asking the network.
-        guard !cached.contains(where: { !hasEndpointSession(PeerID(publicKey: $0.publicKey)) }) else {
-            return complete(request, .endpoints(cached))
+        guard !cached.contains(where: { !hasEndpointSession(PeerID(publicKey: $0.endpoint.publicKey)) }) else {
+            return complete(request, withAddresses ? .providers(cached) : .endpoints(cached.map(\.endpoint)))
         }
-        startProviderSearch(rootCID: rootCID, waiter: .request(request, cached: cached))
+        startProviderSearch(
+            rootCID: rootCID,
+            waiter: .request(request, cached: cached, withAddresses: withAddresses))
     }
 
     /// Asks the network who provides `rootCID`. The waiter always hears,
@@ -64,7 +69,7 @@ extension IvyCore {
     mutating func startProviderSearch(rootCID: String, waiter: ProviderSearchWaiter) -> OpID {
         let id = makeID()
         providerSearches[id] = ProviderSearch(rootCID: rootCID, waiter: waiter)
-        if case .request(let request, _) = waiter { requests[request] = .providerSearch(id) }
+        if case .request(let request, _, _) = waiter { requests[request] = .providerSearch(id) }
         guard config.mode.usesOverlayServices, isRunning, MessageLimits.accepts(rootCID) else {
             finishProviderSearch(id, [])
             return id
@@ -137,15 +142,18 @@ extension IvyCore {
                 peer: hint.peer,
                 endpoint: hint.endpoint,
                 expiresAt: hint.expiresAt,
-                source: hint.source)
+                source: hint.source,
+                webAddresses: hint.webAddresses)
         }
-        let endpoints = hints.compactMap(\.endpoint)
-        for waiter in pending.waiters { finishProviderSearch(waiter, endpoints) }
+        let providers = hints.compactMap { hint in
+            hint.endpoint.map { DiscoveredProvider(endpoint: $0, webAddresses: hint.webAddresses) }
+        }
+        for waiter in pending.waiters { finishProviderSearch(waiter, providers) }
     }
 
     /// Ends a search and tells its waiter. Ending the last search for a
     /// root ends its walk and its round.
-    mutating func finishProviderSearch(_ id: OpID, _ endpoints: [PeerEndpoint]) {
+    mutating func finishProviderSearch(_ id: OpID, _ providers: [DiscoveredProvider]) {
         guard let search = providerSearches.removeValue(forKey: id) else { return }
         if var pending = pendingProviderQueries[search.rootCID],
            let index = pending.waiters.firstIndex(of: id) {
@@ -161,10 +169,12 @@ extension IvyCore {
             }
         }
         switch search.waiter {
-        case .request(let request, let cached):
-            complete(request, .endpoints(uniqueProviderEndpoints(cached + endpoints)))
+        case .request(let request, let cached, let withAddresses):
+            let found = uniqueProviders(cached + providers)
+            complete(request, withAddresses ? .providers(found) : .endpoints(found.map(\.endpoint)))
         case .volumeFetch(let fetch):
-            volumeFetchProviderSearchFinished(fetch, search: id, endpoints: endpoints)
+            volumeFetchProviderSearchFinished(
+                fetch, search: id, endpoints: providers.map(\.endpoint))
         }
     }
 
@@ -174,9 +184,13 @@ extension IvyCore {
         guard config.mode.usesOverlayServices else { return }
         evictExpiredProviders(rootCID: rootCID)
         let records = providerRecordsForWire(providerHints[rootCID] ?? [])
+        // Only a peer that has sent `webAddresses` knows the answer with them.
+        let speaksWebAddresses = endpointSession(for: peer)?.webAddresses != nil
         fireToPeer(
             peer,
-            .providers(rootCID: rootCID, requestID: requestID, records: records))
+            speaksWebAddresses
+                ? .providersWithAddresses(rootCID: rootCID, requestID: requestID, records: records)
+                : .providers(rootCID: rootCID, requestID: requestID, records: records))
     }
 
     /// At most `maxNeighborCount` records, every identity's first route
@@ -187,7 +201,8 @@ extension IvyCore {
     mutating func providerRecordsForWire(_ hints: [ProviderHint]) -> [ProviderRecord] {
         let records = hints.compactMap { hint -> ProviderRecord? in
             guard let endpoint = hint.endpoint else { return nil }
-            return ProviderRecord(endpoint: endpoint, expiresAt: hint.expiresAt)
+            return ProviderRecord(
+                endpoint: endpoint, expiresAt: hint.expiresAt, webAddresses: hint.webAddresses)
         }.sorted {
             ($0.endpoint.publicKey, $0.endpoint.host, $0.endpoint.port)
                 < ($1.endpoint.publicKey, $1.endpoint.host, $1.endpoint.port)
@@ -236,7 +251,8 @@ extension IvyCore {
                 peer: key.peerID,
                 endpoint: canonical,
                 expiresAt: record.expiresAt,
-                source: peer))
+                source: peer,
+                webAddresses: record.webAddresses))
         }
 
         pending.responsesByPeer[peer.publicKey] = boundedProviderHints(accepted, rootCID: rootCID)
@@ -256,7 +272,8 @@ extension IvyCore {
             peer: peer,
             endpoint: providerEndpoint(for: peer),
             expiresAt: expiresAt,
-            source: peer)
+            source: peer,
+            webAddresses: endpointSession(for: peer)?.webAddresses ?? [])
     }
 
     mutating func announceProvider(rootCID: String, expiresAt: UInt64) {
@@ -269,7 +286,8 @@ extension IvyCore {
                 peer: localID,
                 endpoint: endpoint,
                 expiresAt: expiresAt,
-                source: localID)
+                source: localID,
+                webAddresses: localWebAddresses)
         }
         guard isRunning else { return }
         // A walk already running for the root announces the newest expiry.
@@ -299,6 +317,25 @@ extension IvyCore {
         providerWalkSessions[peer.key] == peer.sessionID
     }
 
+    /// Replaces this node's web addresses: every session is told, and this
+    /// node's own records carry the new set.
+    mutating func setWebAddresses(_ addresses: [WebAddress]) {
+        guard WebAddress.isValidList(addresses), addresses != localWebAddresses else { return }
+        localWebAddresses = addresses
+        for rootCID in providerHints.keys.sorted()
+            where providerHints[rootCID]?.contains(where: { $0.source == localID }) == true {
+            setProviderHints(providerHints[rootCID]!.map { hint in
+                guard hint.source == localID else { return hint }
+                var own = hint
+                own.webAddresses = addresses
+                return own
+            }, rootCID: rootCID)
+        }
+        for key in sessions.keys.sorted() {
+            if let ref = sessions[key]?.ref { sendWebAddresses(on: ref) }
+        }
+    }
+
     /// Stops announcing `rootCID`: drops this node's own record of it and
     /// any announcement its walk has not sent yet. Records already sent stay
     /// on their holders until they expire; the wire has no withdrawal.
@@ -309,8 +346,20 @@ extension IvyCore {
     }
 
     mutating func cachedProviderEndpoints(rootCID: String) -> [PeerEndpoint] {
+        cachedProviders(rootCID: rootCID).map(\.endpoint)
+    }
+
+    mutating func cachedProviders(rootCID: String) -> [DiscoveredProvider] {
         evictExpiredProviders(rootCID: rootCID)
-        return uniqueProviderEndpoints((providerHints[rootCID] ?? []).compactMap(\.endpoint))
+        return uniqueProviders((providerHints[rootCID] ?? []).compactMap { hint in
+            hint.endpoint.map { DiscoveredProvider(endpoint: $0, webAddresses: hint.webAddresses) }
+        })
+    }
+
+    /// The first of each endpoint.
+    func uniqueProviders(_ providers: [DiscoveredProvider]) -> [DiscoveredProvider] {
+        var seen: Set<PeerEndpoint> = []
+        return providers.filter { seen.insert($0.endpoint).inserted }
     }
 
     func uniqueProviderEndpoints(_ endpoints: [PeerEndpoint]) -> [PeerEndpoint] {
@@ -323,14 +372,16 @@ extension IvyCore {
         peer: PeerID,
         endpoint: PeerEndpoint?,
         expiresAt: UInt64,
-        source: PeerID? = nil
+        source: PeerID? = nil,
+        webAddresses: [WebAddress] = []
     ) {
         let source = source ?? peer
         let hint = ProviderHint(
             peer: peer,
             endpoint: endpoint,
             expiresAt: expiresAt,
-            source: source)
+            source: source,
+            webAddresses: webAddresses)
         evictExpiredProviders(rootCID: rootCID)
         // A referral never overrides what a provider announced for itself.
         if source != peer,

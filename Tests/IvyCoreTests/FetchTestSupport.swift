@@ -144,9 +144,9 @@ final class FetchRawPeer {
             guard undecoded.count >= 4 + length else { return }
             let body = Data(undecoded.dropFirst(4).prefix(length))
             undecoded = Data(undecoded.dropFirst(4 + length))
-            if case .data(let record)? = try? SessionWireRecord.deserialize(body),
+            if let wire = try? SessionWireRecord.deserialize(body), !wire.isSessionOpening,
+               case .data(let record) = wire,
                let message = Message.deserialize(record.payload) {
-                if case .sessionKey = message { continue }
                 inbox.append(message)
             }
         }

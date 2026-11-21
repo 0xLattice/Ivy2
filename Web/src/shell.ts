@@ -9,6 +9,7 @@ import {
   type AuthenticatedPeer,
   type ConnectError,
   type ContentEntry,
+  type DiscoveredProvider,
   type Duration,
   type Effect,
   type Event,
@@ -23,6 +24,7 @@ import {
   type SendMessageResult,
   type VolumeBundleResponse,
   type VolumeResponse,
+  type WebAddress,
   hex,
   unlimited,
 } from './codec.js';
@@ -592,8 +594,30 @@ export class Ivy {
     this.command({ kind: 'stopProviding', rootCID });
   }
 
-  async discoverProviders(rootCID: string, options: RequestOptions = {}): Promise<PeerEndpoint[]> {
-    return endpoints(await this.request({ kind: 'discoverProviders', rootCID }, options.signal));
+  /// Each provider with the web addresses its record carries: what this
+  /// page can dial. A provider whose record carries none, or that was
+  /// learned from a node predating web addresses, has an empty list.
+  async discoverProviders(
+    rootCID: string,
+    options: RequestOptions = {},
+  ): Promise<DiscoveredProvider[]> {
+    const result = await this.request({ kind: 'discoverProviderAddresses', rootCID }, options.signal);
+    return result.kind === 'providers' ? result.providers : [];
+  }
+
+  /// Sets the addresses other browsers may reach this node at (relays it
+  /// is reachable through, say). Every session is told, and this node's
+  /// provider records carry them. Without a call the core tells its
+  /// sessions it has none, which is what asks them for addresses in their
+  /// provider answers. Throws unless there are at most four, each a
+  /// `ws://` or `wss://` URL of at most 256 printable ASCII bytes.
+  setWebAddresses(addresses: WebAddress[]) {
+    const valid = (url: string) =>
+      url.length <= 256 && /^wss?:\/\/[\x21-\x7e]+$/.test(url);
+    if (addresses.length > 4 || !addresses.every((address) => valid(address.url))) {
+      throw new Error('not valid web addresses');
+    }
+    this.command({ kind: 'setWebAddresses', addresses });
   }
 
   providers(rootCID: string): PeerID[] {

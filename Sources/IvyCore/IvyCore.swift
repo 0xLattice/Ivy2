@@ -36,6 +36,9 @@ public struct IvyCore: Sendable {
     /// Connected endpoints the application says relay. A peer that does not
     /// relay ends the session of one that asks it to, so only these are asked.
     var relayingPeers: Set<PeerKey> = []
+    /// What `webAddresses` tells every session, and this node's own provider
+    /// records carry.
+    var localWebAddresses: [WebAddress] = []
     var router: Router
 
     // MARK: Links and sessions
@@ -483,7 +486,9 @@ public struct IvyCore: Sendable {
             }
             startLookup(target: target, waiter: .request(id))
         case .discoverProviders(let rootCID):
-            discoverProviders(id, rootCID: rootCID)
+            discoverProviders(id, rootCID: rootCID, withAddresses: false)
+        case .discoverProviderAddresses(let rootCID):
+            discoverProviders(id, rootCID: rootCID, withAddresses: true)
         case .recycleSession(let peer):
             complete(id, .flag(recycleSession(ifCurrent: peer)))
         case .disconnectSession(let peer):
@@ -532,6 +537,8 @@ public struct IvyCore: Sendable {
             reportDeficientContent(rootCID: rootCID, servedBy: peer)
         case .setContentSource(let present):
             hasContentSource = present
+        case .setWebAddresses(let addresses):
+            setWebAddresses(addresses)
         case let .setRelaying(peer, relays):
             guard let key = try? PeerKey(peer.publicKey) else { return }
             if relays, endpointSession(for: key) != nil {
@@ -574,6 +581,14 @@ public struct IvyCore: Sendable {
         return (providerHints[rootCID] ?? []).compactMap { hint in
             hint.expiresAt > now.unixSeconds && seen.insert(hint.peer).inserted ? hint.peer : nil
         }
+    }
+
+    /// The web addresses `peer`'s current session last advertised: nil when
+    /// it has no session or has sent none, which is how a peer that does
+    /// not speak web addresses looks.
+    public func webAddresses(of peer: PeerID) -> [WebAddress]? {
+        guard let key = try? PeerKey(peer.publicKey) else { return nil }
+        return sessions[key]?.webAddresses
     }
 
     /// The authenticated session currently selected for `peer`, if any.

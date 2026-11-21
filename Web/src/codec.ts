@@ -13,6 +13,20 @@ export interface PeerEndpoint {
   port: number;
 }
 
+/// An address a browser can dial: a `ws://` or `wss://` URL of at most
+/// 256 printable ASCII bytes. Without `via` the advertiser listens there;
+/// with it, the advertiser is reached by connecting to peer `via` at `url`
+/// and relaying through it. A peer advertises at most four.
+export interface WebAddress {
+  url: string;
+  via?: PeerID;
+}
+
+/// A provider's route and the web addresses its record carries.
+export interface DiscoveredProvider extends PeerEndpoint {
+  webAddresses: WebAddress[];
+}
+
 export interface Address {
   host: string;
   port: number;
@@ -113,6 +127,7 @@ export type Request =
   | { kind: 'fetchVolumeBundle'; rootCID: string; from: AuthenticatedPeer[] }
   | { kind: 'findNode'; target: string }
   | { kind: 'discoverProviders'; rootCID: string }
+  | { kind: 'discoverProviderAddresses'; rootCID: string }
   | { kind: 'recycleSession'; peer: AuthenticatedPeer }
   | { kind: 'disconnectSession'; peer: AuthenticatedPeer }
   | {
@@ -131,7 +146,8 @@ export type Command =
   | { kind: 'reportDeficientContent'; rootCID: string; servedBy: PeerID }
   | { kind: 'setContentSource'; present: boolean }
   | { kind: 'setRelaying'; peer: PeerID; relays: boolean }
-  | { kind: 'stopProviding'; rootCID: string };
+  | { kind: 'stopProviding'; rootCID: string }
+  | { kind: 'setWebAddresses'; addresses: WebAddress[] };
 
 export type JobResult =
   | { kind: 'entries'; entries: ContentEntry[] }
@@ -174,7 +190,8 @@ export type RequestResult =
   | { kind: 'volume'; response: VolumeResponse }
   | { kind: 'volumeBundle'; response: VolumeBundleResponse }
   | { kind: 'endpoints'; endpoints: PeerEndpoint[] }
-  | { kind: 'flag'; flag: boolean };
+  | { kind: 'flag'; flag: boolean }
+  | { kind: 'providers'; providers: DiscoveredProvider[] };
 
 export type Effect =
   | { kind: 'dial'; dial: bigint; endpoint: PeerEndpoint }
@@ -346,6 +363,10 @@ class Writer {
     for (const value of values) write(value);
   }
 
+  webAddress(value: WebAddress) {
+    this.string(value.url);
+    this.optional(value.via, (via) => this.string(via));
+  }
   endpoint(value: PeerEndpoint) {
     this.string(value.publicKey);
     this.string(value.host);
@@ -520,6 +541,9 @@ class Writer {
         this.string(value.rootCID);
         this.int64(value.maximumArchiveBytes);
         return this.int64(value.maximumEntries);
+      case 'discoverProviderAddresses':
+        this.uint8(15);
+        return this.string(value.rootCID);
     }
   }
 
@@ -553,6 +577,9 @@ class Writer {
       case 'stopProviding':
         this.uint8(7);
         return this.string(value.rootCID);
+      case 'setWebAddresses':
+        this.uint8(8);
+        return this.list(value.addresses, (address) => this.webAddress(address));
     }
   }
 
@@ -660,6 +687,12 @@ class Writer {
       case 'flag':
         this.uint8(6);
         return this.bool(value.flag);
+      case 'providers':
+        this.uint8(7);
+        return this.list(value.providers, (provider) => {
+          this.endpoint(provider);
+          this.list(provider.webAddresses, (address) => this.webAddress(address));
+        });
     }
   }
 }
@@ -745,6 +778,13 @@ class Reader {
 
   endpoint(): PeerEndpoint {
     return { publicKey: this.string(), host: this.string(), port: this.uint16() };
+  }
+  webAddress(): WebAddress {
+    const url = this.string();
+    const via = this.optional(() => this.string());
+    if (via === null) return { url };
+    if (!/^[0-9a-f]{64}$/.test(via)) throw new Error('not a peer key');
+    return { url, via };
   }
   address(): Address {
     return { host: this.string(), port: this.uint16() };
@@ -913,6 +953,8 @@ class Reader {
           maximumArchiveBytes: this.int64(),
           maximumEntries: this.int64(),
         };
+      case 15:
+        return { kind: 'discoverProviderAddresses', rootCID: this.string() };
       default:
         throw new Error(`unknown request ${tag}`);
     }
@@ -941,6 +983,8 @@ class Reader {
         return { kind: 'setRelaying', peer: this.string(), relays: this.bool() };
       case 7:
         return { kind: 'stopProviding', rootCID: this.string() };
+      case 8:
+        return { kind: 'setWebAddresses', addresses: this.list(() => this.webAddress()) };
       default:
         throw new Error(`unknown command ${tag}`);
     }
@@ -1035,6 +1079,14 @@ class Reader {
         return { kind: 'endpoints', endpoints: this.list(() => this.endpoint()) };
       case 6:
         return { kind: 'flag', flag: this.bool() };
+      case 7:
+        return {
+          kind: 'providers',
+          providers: this.list(() => ({
+            ...this.endpoint(),
+            webAddresses: this.list(() => this.webAddress()),
+          })),
+        };
       default:
         throw new Error(`unknown result ${tag}`);
     }

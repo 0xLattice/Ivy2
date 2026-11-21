@@ -146,6 +146,18 @@ final class DiscoveryScriptedPeer {
         }
     }
 
+    func takeProvidersWithAddresses() -> [(rootCID: String, requestID: UInt64, records: [ProviderRecord])] {
+        take {
+            if case .providersWithAddresses(let root, let id, let records) = $0 {
+                return (root, id, records)
+            } else { return nil }
+        }
+    }
+
+    func takeWebAddresses() -> [[WebAddress]] {
+        take { if case .webAddresses(let addresses) = $0 { return addresses } else { return nil } }
+    }
+
     func takeNeighbors() -> [(endpoints: [PeerEndpoint], nonce: UInt64)] {
         take { if case .neighbors(let endpoints, let nonce) = $0 { return (endpoints, nonce) } else { return nil } }
     }

@@ -170,7 +170,7 @@ final class RawRelayPeer {
                 XCTFail("node wrote an undecodable record")
                 continue
             }
-            if !record.isSessionKeyOffer { records.append(record) }
+            if !record.isSessionOpening { records.append(record) }
         }
         return records
     }
@@ -187,7 +187,7 @@ final class RawRelayPeer {
             }
             // A relayed session's MAC key share, ignored by the raw remote.
             if case .relayPacket(_, let record) = message,
-               (try? SessionWireRecord.deserialize(record, maxPayload: .max))?.isSessionKeyOffer == true {
+               (try? SessionWireRecord.deserialize(record, maxPayload: .max))?.isSessionOpening == true {
                 continue
             }
             buffered.append(message)

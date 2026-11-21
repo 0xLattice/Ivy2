@@ -60,6 +60,7 @@ bare lower-case one.
 | `peerID` | `string`: the public key in hex |
 | `route` | `u8` tag: `0` direct; `1` relayed, then `key` carrier, `bytes` routeID |
 | `peer` (`AuthenticatedPeer`) | `key`, `u8` role (`0` endpoint, `1` carrier), `route`, `list<address>` listenAddresses, `u32` maxFrameSize, `bytes` sessionID |
+| `webAddress` | `string` url, `optional<string>` via: a public key as 64 lower-case hex digits |
 | `failure` | `optional<u8>`: `0` callerBoundaryExceeded, `1` localCapacityUnavailable, `2` notSent |
 | `volume` | `string` rootCID, `list<(string cid, bytes data)>` in ascending order of the identifiers' UTF-8 bytes, `optional<peerID>` servedBy, `failure` |
 
@@ -103,6 +104,7 @@ bare lower-case one.
 | 12 | `recycleSession` | `peer` |
 | 13 | `disconnectSession` | `peer` |
 | 14 | `fetchVolumeFromSessions` | `list<peer>` from, `string` rootCID, `size` maximumArchiveBytes, `size` maximumEntries |
+| 15 | `discoverProviderAddresses` | `string` rootCID |
 
 ### Command
 
@@ -116,6 +118,7 @@ bare lower-case one.
 | 5 | `setContentSource` | `bool` |
 | 6 | `setRelaying` | `peerID`, `bool` relays |
 | 7 | `stopProviding` | `string` rootCID |
+| 8 | `setWebAddresses` | `list<webAddress>` |
 
 ### Job result
 
@@ -166,6 +169,7 @@ bare lower-case one.
 | 4 | `volumeBundle` | `list<volume>`, `bool` noBundle, `bool` ended, `failure` |
 | 5 | `endpoints` | `list<endpoint>` |
 | 6 | `flag` | `bool` |
+| 7 | `providers` | `list<(endpoint, list<webAddress>)>` |
 
 Connect errors: `0` notRunning, `1` invalidPeerKey, `2` peerOutsideMode,
 `3` connectionInProgress, `4` identityVerificationFailed, `5` noRelayAvailable,

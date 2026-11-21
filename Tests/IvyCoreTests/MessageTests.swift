@@ -129,6 +129,61 @@ final class MessageTests: XCTestCase {
         }
     }
 
+    /// Tags 43 and 44: a peer's web addresses, and provider answers that
+    /// carry them. Tag 41 drops a record's addresses.
+    func testWebAddressTags() throws {
+        let key = try PeerKey(rawRepresentation: Data(repeating: 0x44, count: 32))
+        let keyBytes = String(repeating: "44", count: 32)
+        let endpoint = PeerEndpoint(publicKey: "pk", host: "h", port: 0x1234)
+        let direct = WebAddress(url: "ws://a")
+        let relayed = WebAddress(url: "wss://b", via: key)
+        let record = ProviderRecord(endpoint: endpoint, expiresAt: 5, webAddresses: [direct])
+        let vectors: [(Message, String)] = [
+            (.webAddresses([]), "2b0000"),
+            (.webAddresses([direct, relayed]),
+             "2b0002" + "0006" + "77733a2f2f61" + "00" + "0007" + "7773733a2f2f62" + "01" + keyBytes),
+            (.providersWithAddresses(rootCID: "r", requestID: 4, records: [record]),
+             "2c000172" + "0001" + "0002706b00016812340000000000000005" + "0001000677733a2f2f6100"
+                + "0000000000000004"),
+            (.providers(rootCID: "r", requestID: 4, records: [record]),
+             "2900017200010002706b000168123400000000000000050000000000000004"),
+        ]
+        for (message, hex) in vectors {
+            let expected = try XCTUnwrap(Data(hexString: hex))
+            XCTAssertEqual(message.serialize(), expected)
+            XCTAssertEqual(Message.deserialize(expected)?.serialize(), expected)
+        }
+
+        // Out of bounds: nothing is encoded, and such bytes do not decode.
+        let tooLong = WebAddress(url: "wss://" + String(repeating: "a", count: 251))
+        XCTAssertEqual(tooLong.url.utf8.count, 257)
+        XCTAssertTrue(WebAddress(url: "wss://" + String(repeating: "a", count: 250)).isValid)
+        for invalid in [
+            Array(repeating: direct, count: 5),
+            [tooLong],
+            [WebAddress(url: "http://a")],
+            [WebAddress(url: "wss://a b")],
+            [WebAddress(url: "wss://")],
+        ] {
+            XCTAssertTrue(Message.webAddresses(invalid).serialize().isEmpty)
+            XCTAssertTrue(Message.providersWithAddresses(
+                rootCID: "r", requestID: 4,
+                records: [ProviderRecord(endpoint: endpoint, expiresAt: 5, webAddresses: invalid)]
+            ).serialize().isEmpty)
+        }
+        let five = try XCTUnwrap(Data(hexString: "2b0005" + String(repeating: "000677733a2f2f6100", count: 5)))
+        XCTAssertNil(Message.deserialize(five))
+        XCTAssertFalse(Message.hasUnknownTag(five), "malformed, not unknown")
+        let http = try XCTUnwrap(Data(hexString: "2b00010008687474703a2f2f6100"))
+        XCTAssertNil(Message.deserialize(http))
+        var long = Data([0x2b, 0x00, 0x01, 0x01, 0x01])
+        long.append(Data(tooLong.url.utf8))
+        long.append(0)
+        XCTAssertNil(Message.deserialize(long))
+        XCTAssertNil(Message.deserialize(try XCTUnwrap(Data(hexString: "2b0001000677733a2f2f6102"))),
+                     "a via flag is 0 or 1")
+    }
+
     /// Tags 26 and 50 carried content selections. They are retired: a
     /// record that opens with one is a message this version does not know.
     func testRetiredContentSelectionTagsAreUnknown() throws {

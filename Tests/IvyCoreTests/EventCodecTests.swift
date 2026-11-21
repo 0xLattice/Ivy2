@@ -81,6 +81,8 @@ final class EventCodecTests: XCTestCase {
          .request(RequestID(12), .fetchVolumeBundle(rootCID: "root", from: []))),
         ("request: findNode", .request(RequestID(13), .findNode(target: key(4).hex))),
         ("request: discoverProviders", .request(RequestID(14), .discoverProviders(rootCID: "root"))),
+        ("request: discoverProviderAddresses",
+         .request(RequestID(19), .discoverProviderAddresses(rootCID: "root"))),
         ("request: recycleSession", .request(RequestID(15), .recycleSession(direct))),
         ("request: disconnectSession", .request(RequestID(16), .disconnectSession(relayed))),
         ("request: fetchVolumeFromSessions, two sessions",
@@ -102,6 +104,12 @@ final class EventCodecTests: XCTestCase {
         ("command: setContentSource, absent", .command(.setContentSource(false))),
         ("command: setRelaying", .command(.setRelaying(peer, true))),
         ("command: setRelaying, not", .command(.setRelaying(peer, false))),
+        ("command: setWebAddresses",
+         .command(.setWebAddresses([
+            WebAddress(url: "wss://a.example/ivy"),
+            WebAddress(url: "wss://relay.example", via: key(3)),
+         ]))),
+        ("command: setWebAddresses, none", .command(.setWebAddresses([]))),
         ("delivered", .delivered(DeliveryToken(21))),
         ("jobFinished: entries",
          .jobFinished(JobID(30), .entries([
@@ -185,6 +193,13 @@ final class EventCodecTests: XCTestCase {
          ]))),
         ("completed: no endpoints", .completed(RequestID(13), .endpoints([]))),
         ("completed: flag", .completed(RequestID(15), .flag(true))),
+        ("completed: providers",
+         .completed(RequestID(19), .providers([
+            DiscoveredProvider(endpoint: endpoint, webAddresses: [
+                WebAddress(url: "wss://relay.example", via: key(3)),
+            ]),
+            DiscoveredProvider(endpoint: PeerEndpoint(publicKey: key(2).hex, host: "8.8.1.2", port: 1)),
+         ]))),
         ("startJob: readVolume", .startJob(JobID(30), .readVolume(rootCID: "root", maxDataBytes: 64 << 20))),
         ("startJob: readVolumeBundle", .startJob(JobID(32), .readVolumeBundle(rootCID: "root"))),
         ("startJob: authorizeVolume", .startJob(JobID(33), .authorizeVolume(relayed, rootCID: "root"))),
@@ -226,6 +241,7 @@ final class EventCodecTests: XCTestCase {
             case .fetchVolumeBundle: return "request.fetchVolumeBundle"
             case .findNode: return "request.findNode"
             case .discoverProviders: return "request.discoverProviders"
+            case .discoverProviderAddresses: return "request.discoverProviderAddresses"
             case .recycleSession: return "request.recycleSession"
             case .disconnectSession: return "request.disconnectSession"
             case .fetchVolumeFromSessions: return "request.fetchVolumeFromSessions"
@@ -241,6 +257,7 @@ final class EventCodecTests: XCTestCase {
             case .reportDeficientContent: return "command.reportDeficientContent"
             case .setContentSource: return "command.setContentSource"
             case .setRelaying: return "command.setRelaying"
+            case .setWebAddresses: return "command.setWebAddresses"
             }
         case .delivered: return "delivered"
         case .jobFinished(_, .entries): return "jobFinished.entries"
@@ -292,6 +309,7 @@ final class EventCodecTests: XCTestCase {
             case .volumeBundle: return "completed.volumeBundle"
             case .endpoints: return "completed.endpoints"
             case .flag: return "completed.flag"
+            case .providers: return "completed.providers"
             }
         case .startJob(_, .readVolume): return "startJob.readVolume"
         case .startJob(_, .readVolumeBundle): return "startJob.readVolumeBundle"
@@ -303,8 +321,8 @@ final class EventCodecTests: XCTestCase {
     }
 
     func testEveryCaseHasASample() {
-        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 38)
-        XCTAssertEqual(Set(Self.effects.map { name($0.1) }).count, 37)
+        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 40)
+        XCTAssertEqual(Set(Self.effects.map { name($0.1) }).count, 38)
         XCTAssertEqual(Set(Self.events.map(\.0)).count, Self.events.count, "descriptions repeat")
         XCTAssertEqual(Set(Self.effects.map(\.0)).count, Self.effects.count, "descriptions repeat")
     }

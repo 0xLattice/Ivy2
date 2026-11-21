@@ -123,6 +123,11 @@ struct CodecWriter {
         for value in values { write(&self, value) }
     }
 
+    mutating func webAddress(_ value: WebAddress) {
+        string(value.url)
+        optional(value.via) { $0.string($1.hex) }
+    }
+
     mutating func endpoint(_ value: PeerEndpoint) {
         string(value.publicKey)
         string(value.host)
@@ -311,6 +316,9 @@ struct CodecWriter {
             string(rootCID)
             int64(Int64(maximumArchiveBytes))
             int64(Int64(maximumEntries))
+        case .discoverProviderAddresses(let rootCID):
+            uint8(15)
+            string(rootCID)
         }
     }
 
@@ -344,6 +352,9 @@ struct CodecWriter {
         case .stopProviding(let rootCID):
             uint8(7)
             string(rootCID)
+        case .setWebAddresses(let addresses):
+            uint8(8)
+            list(addresses) { $0.webAddress($1) }
         }
     }
 
@@ -466,6 +477,12 @@ struct CodecWriter {
         case .flag(let flag):
             uint8(6)
             bool(flag)
+        case .providers(let providers):
+            uint8(7)
+            list(providers) {
+                $0.endpoint($1.endpoint)
+                $0.list($1.webAddresses) { $0.webAddress($1) }
+            }
         }
     }
 }
@@ -547,6 +564,17 @@ struct CodecReader {
         var values: [Value] = []
         for _ in 0..<count { values.append(try read(&self)) }
         return values
+    }
+
+    /// `via` as the 64 lowercase hex digits `PeerKey.hex` spells.
+    mutating func webAddress() throws -> WebAddress {
+        let url = try string()
+        let via = try optional { reader -> PeerKey in
+            let hex = try reader.string()
+            guard let key = try? PeerKey(hex), key.hex == hex else { throw Malformed() }
+            return key
+        }
+        return WebAddress(url: url, via: via)
     }
 
     mutating func endpoint() throws -> PeerEndpoint {
@@ -725,6 +753,8 @@ struct CodecReader {
                 rootCID: try string(),
                 maximumArchiveBytes: try size(),
                 maximumEntries: try size())
+        case 15:
+            return .discoverProviderAddresses(rootCID: try string())
         default:
             throw Malformed()
         }
@@ -749,6 +779,8 @@ struct CodecReader {
             return .setRelaying(PeerID(publicKey: try string()), try bool())
         case 7:
             return .stopProviding(rootCID: try string())
+        case 8:
+            return .setWebAddresses(try list { try $0.webAddress() })
         default:
             throw Malformed()
         }
@@ -849,6 +881,11 @@ struct CodecReader {
             return .endpoints(try list { try $0.endpoint() })
         case 6:
             return .flag(try bool())
+        case 7:
+            return .providers(try list {
+                DiscoveredProvider(
+                    endpoint: try $0.endpoint(), webAddresses: try $0.list { try $0.webAddress() })
+            })
         default:
             throw Malformed()
         }

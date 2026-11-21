@@ -100,6 +100,8 @@ public enum Request: Sendable, Equatable {
         [AuthenticatedPeer], rootCID: String, maximumArchiveBytes: Int, maximumEntries: Int)
     case findNode(target: String)
     case discoverProviders(rootCID: String)
+    /// `discoverProviders`, answered with each provider's web addresses.
+    case discoverProviderAddresses(rootCID: String)
     case recycleSession(AuthenticatedPeer)
     case disconnectSession(AuthenticatedPeer)
 }
@@ -119,6 +121,10 @@ public enum Command: Sendable, Equatable {
     /// Whether a connected peer is known to relay, and so may be asked for a
     /// route. Forgotten when the peer's session ends.
     case setRelaying(PeerID, Bool)
+    /// The addresses browsers may reach this node at, sent to every session
+    /// and carried by this node's provider records. Ignored unless
+    /// `WebAddress.isValidList`.
+    case setWebAddresses([WebAddress])
 }
 
 public enum JobResult: Sendable, Equatable {
@@ -179,6 +185,18 @@ public enum RequestResult: Sendable, Equatable {
     case volumeBundle(AttributedVolumeBundleResponse)
     case endpoints([PeerEndpoint])
     case flag(Bool)
+    case providers([DiscoveredProvider])
+}
+
+/// A provider's route and the web addresses its record carries.
+public struct DiscoveredProvider: Sendable, Equatable {
+    public let endpoint: PeerEndpoint
+    public let webAddresses: [WebAddress]
+
+    public init(endpoint: PeerEndpoint, webAddresses: [WebAddress] = []) {
+        self.endpoint = endpoint
+        self.webAddresses = webAddresses
+    }
 }
 
 public enum Effect: Sendable, Equatable {

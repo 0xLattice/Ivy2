@@ -95,6 +95,14 @@ Provider records are expiring routing hints, not proof of possession, validity,
 pinning, or authority. A record is what a peer announced for itself or what a
 lookup answer referred; a peer that served content is not recorded as a provider.
 
+A record also carries its provider's web addresses: `ws://` or `wss://` URLs a
+browser can dial, either the provider's own or one naming a peer to relay
+through. A node sets its own with `setWebAddresses(_:)`;
+`discoverProviderAddresses(rootCID:)` returns each provider with its
+addresses, and `webAddresses(of:)` what a connected peer advertised. They
+travel in two messages (tags 43 and 44) that peers predating them ignore;
+such peers keep getting the plain `providers` answer (tag 41).
+
 ## Application messages
 
 ```swift

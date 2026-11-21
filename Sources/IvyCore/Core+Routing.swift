@@ -142,6 +142,13 @@ extension IvyCore {
         case .announceProvider(let rootCID, let expiresAt):
             handleAnnounceProvider(rootCID: rootCID, expiresAt: expiresAt, from: peer)
 
+        case .webAddresses(let addresses):
+            sessions[ref.key]?.webAddresses = addresses
+
+        case .providersWithAddresses(let rootCID, let requestID, let records):
+            handleProvidersResponse(
+                rootCID: rootCID, requestID: requestID, records: records, from: peer)
+
         case .peerMessage(let topic, let payload):
             // The link's next record waits for the application to finish
             // with this one: its pace bounds what Ivy takes from the peer.

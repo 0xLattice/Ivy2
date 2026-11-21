@@ -46,6 +46,9 @@ struct Session: Sendable {
     /// Set once both shares are exchanged: records sent are then MACed, not
     /// signed. A peer that never sends a share keeps the session signed.
     var macKeys: SessionMACKeys?
+    /// What the peer last sent in `webAddresses`; nil until it sends one,
+    /// and then its provider answers carry addresses.
+    var webAddresses: [WebAddress]?
     var didNotifyConnect = false
     /// The connect operation waiting for the application to see this session.
     var op: OpID?
@@ -513,6 +516,7 @@ extension IvyCore {
         session.op = pending.op
         sessions[peerKey] = session
         offerSessionKey(session.ref)
+        sendWebAddresses(on: session.ref)
         let token = blockForDelivery(id, connected: peerKey)
         emit(.peerConnected(token, authenticatedPeer(session)))
     }
@@ -571,6 +575,13 @@ extension IvyCore {
               case .enqueued = enqueue(.sessionKey(share.publicKey.rawRepresentation), on: ref, reserve: true)
         else { return }
         sessions[ref.key]?.keyShare = bytes
+    }
+
+    /// Tells the peer this node's web addresses. Sent on every session, even
+    /// empty: a peer that sends none gets provider answers without them.
+    mutating func sendWebAddresses(on ref: SessionRef) {
+        guard config.mode.usesOverlayServices else { return }
+        enqueue(.webAddresses(localWebAddresses), on: ref, reserve: true)
     }
 
     /// The peer's share, from a record already authenticated on `ref`.

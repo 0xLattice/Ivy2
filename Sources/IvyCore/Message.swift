@@ -17,6 +17,41 @@ public struct ContentEntry: Sendable, Equatable {
 struct ProviderRecord: Sendable, Equatable {
     let endpoint: PeerEndpoint
     let expiresAt: UInt64
+    /// Carried only by `providersWithAddresses`; `providers` drops them.
+    var webAddresses: [WebAddress] = []
+}
+
+/// An address a browser can dial: a WebSocket URL. Without `via` the peer
+/// that advertises it listens there itself; with it, the advertiser is
+/// reached by connecting to peer `via` at `url` and relaying through it.
+/// Like a provider's endpoint it is the advertiser's unauthenticated
+/// claim: the dialer proves the key when it connects.
+public struct WebAddress: Sendable, Equatable, Hashable {
+    public let url: String
+    public let via: PeerKey?
+
+    /// Addresses one peer may advertise.
+    public static let maxCount = 4
+    public static let maxURLBytes = 256
+
+    public init(url: String, via: PeerKey? = nil) {
+        self.url = url
+        self.via = via
+    }
+
+    /// A `ws://` or `wss://` URL of at most `maxURLBytes` printable ASCII
+    /// bytes.
+    public var isValid: Bool {
+        let bytes = url.utf8
+        return bytes.count <= Self.maxURLBytes
+            && bytes.allSatisfy { $0 > 0x20 && $0 < 0x7f }
+            && ["ws://", "wss://"].contains { url.hasPrefix($0) && bytes.count > $0.utf8.count }
+    }
+
+    /// At most `maxCount` addresses, each valid.
+    public static func isValidList(_ addresses: [WebAddress]) -> Bool {
+        addresses.count <= maxCount && addresses.allSatisfy(\.isValid)
+    }
 }
 
 enum Message: Sendable {
@@ -50,6 +85,12 @@ enum Message: Sendable {
     case findProviders(rootCID: String, requestID: UInt64)
     case providers(rootCID: String, requestID: UInt64, records: [ProviderRecord])
     case announceProvider(rootCID: String, expiresAt: UInt64)
+    /// The sender's web addresses, replacing any it sent before. Sending it
+    /// at all, even empty, asks for `providersWithAddresses` answers.
+    case webAddresses([WebAddress])
+    /// `providers`, with each record's web addresses: the answer to a peer
+    /// that has sent `webAddresses`. Peers that never did get `providers`.
+    case providersWithAddresses(rootCID: String, requestID: UInt64, records: [ProviderRecord])
 
     case relayOpen(routeID: Data, targetKey: PeerKey)
     case relayOffer(routeID: Data, sourceKey: PeerKey)
@@ -79,6 +120,8 @@ enum Message: Sendable {
         case findProviders = 40
         case providers = 41
         case announceProvider = 42
+        case webAddresses = 43
+        case providersWithAddresses = 44
         case peerMessage = 49
         case contentUnavailable = 58
         case relayOpen = 60
@@ -221,6 +264,15 @@ enum Message: Sendable {
             bytes.append(Tag.announceProvider.rawValue)
             guard bytes.appendLengthPrefixedString(rootCID) else { return false }
             bytes.appendUInt64(expiresAt)
+        case .webAddresses(let addresses):
+            bytes.append(Tag.webAddresses.rawValue)
+            guard bytes.appendWebAddresses(addresses) else { return false }
+        case .providersWithAddresses(let rootCID, let requestID, let records):
+            guard MessageLimits.accepts(rootCID), requestID != 0 else { return false }
+            bytes.append(Tag.providersWithAddresses.rawValue)
+            guard bytes.appendLengthPrefixedString(rootCID),
+                  bytes.appendProviderRecords(records, withAddresses: true) else { return false }
+            bytes.appendUInt64(requestID)
         case .relayOpen(let routeID, let targetKey):
             guard routeID.count == 32 else { return false }
             bytes.append(Tag.relayOpen.rawValue)
@@ -342,6 +394,14 @@ enum Message: Sendable {
         case .announceProvider:
             guard let rootCID = reader.readString(), let expiresAt = reader.readUInt64() else { return nil }
             return .announceProvider(rootCID: rootCID, expiresAt: expiresAt)
+        case .webAddresses:
+            guard let addresses = reader.readWebAddresses() else { return nil }
+            return .webAddresses(addresses)
+        case .providersWithAddresses:
+            guard let rootCID = reader.readString(),
+                  let records = reader.readProviderRecords(withAddresses: true),
+                  let requestID = reader.readUInt64(), requestID != 0 else { return nil }
+            return .providersWithAddresses(rootCID: rootCID, requestID: requestID, records: records)
         case .relayOpen:
             guard let routeID = reader.readFixedData(count: 32),
                   let targetBytes = reader.readFixedData(count: 32),
@@ -395,7 +455,9 @@ private extension Data {
         return true
     }
 
-    mutating func appendProviderRecords(_ records: [ProviderRecord]) -> Bool {
+    mutating func appendProviderRecords(
+        _ records: [ProviderRecord], withAddresses: Bool = false
+    ) -> Bool {
         guard appendCount(records.count, max: MessageLimits.maxNeighborCount) else { return false }
         for record in records {
             let endpoint = record.endpoint
@@ -403,6 +465,22 @@ private extension Data {
                   appendLengthPrefixedString(endpoint.host) else { return false }
             appendUInt16(endpoint.port)
             appendUInt64(record.expiresAt)
+            if withAddresses, !appendWebAddresses(record.webAddresses) { return false }
+        }
+        return true
+    }
+
+    mutating func appendWebAddresses(_ addresses: [WebAddress]) -> Bool {
+        guard WebAddress.isValidList(addresses),
+              appendCount(addresses.count, max: UInt16(WebAddress.maxCount)) else { return false }
+        for address in addresses {
+            guard appendLengthPrefixedString(address.url) else { return false }
+            if let via = address.via {
+                appendUInt8(1)
+                append(via.rawRepresentation)
+            } else {
+                appendUInt8(0)
+            }
         }
         return true
     }
@@ -420,7 +498,7 @@ private extension DataReader {
         return endpoints
     }
 
-    mutating func readProviderRecords() -> [ProviderRecord]? {
+    mutating func readProviderRecords(withAddresses: Bool = false) -> [ProviderRecord]? {
         guard let count = readUInt16(), count <= MessageLimits.maxNeighborCount else { return nil }
         var records: [ProviderRecord] = []
         records.reserveCapacity(min(Int(count), 64))
@@ -429,11 +507,38 @@ private extension DataReader {
                   let host = readString(),
                   let port = readUInt16(),
                   let expiresAt = readUInt64() else { return nil }
+            var addresses: [WebAddress] = []
+            if withAddresses {
+                guard let read = readWebAddresses() else { return nil }
+                addresses = read
+            }
             records.append(ProviderRecord(
                 endpoint: PeerEndpoint(publicKey: publicKey, host: host, port: port),
-                expiresAt: expiresAt))
+                expiresAt: expiresAt,
+                webAddresses: addresses))
         }
         return records
+    }
+
+    mutating func readWebAddresses() -> [WebAddress]? {
+        guard let count = readUInt16(), count <= UInt16(WebAddress.maxCount) else { return nil }
+        var addresses: [WebAddress] = []
+        for _ in 0..<count {
+            guard let url = readString(), let flag = readUInt8() else { return nil }
+            var via: PeerKey?
+            switch flag {
+            case 0: break
+            case 1:
+                guard let bytes = readFixedData(count: PeerKey.byteCount),
+                      let key = try? PeerKey(rawRepresentation: bytes) else { return nil }
+                via = key
+            default: return nil
+            }
+            let address = WebAddress(url: url, via: via)
+            guard address.isValid else { return nil }
+            addresses.append(address)
+        }
+        return addresses
     }
 }
 
