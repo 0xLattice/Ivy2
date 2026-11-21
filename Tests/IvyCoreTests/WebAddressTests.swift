@@ -150,6 +150,11 @@ final class WebAddressTests: XCTestCase {
                 ProviderRecord(endpoint: loopback, expiresAt: expiry, webAddresses: addresses),
                 ProviderRecord(endpoint: homelab, expiresAt: expiry, webAddresses: [direct]),
                 ProviderRecord(endpoint: bare, expiresAt: expiry),
+                // Only private and loopback hosts are kept for addresses.
+                ProviderRecord(endpoint: sim.discoveryUnreachableEndpoint(index: 3, host: "169.254.1.1"),
+                               expiresAt: expiry, webAddresses: [direct]),
+                ProviderRecord(endpoint: sim.discoveryUnreachableEndpoint(index: 4, host: "provider.example"),
+                               expiresAt: expiry, webAddresses: [direct]),
             ],
         ]))
         XCTAssertEqual(Set(found), [
@@ -170,6 +175,30 @@ final class WebAddressTests: XCTestCase {
         XCTAssertEqual(asker.takeProviders().first?.records, [], "tag 41 names neither")
         asker.send(.webAddresses([]))
         XCTAssertEqual(Set(try XCTUnwrap(answer(asker, root: "root"))), Set(found))
+    }
+
+    /// A provider on a LAN answering for itself is dialable; a referral
+    /// copying its route is not. The copy never displaces it, whatever order
+    /// the answers are taken in.
+    func testACopyOfALANProvidersRouteNeverDisplacesIt() throws {
+        let sim = Simulation()
+        let node = sim.node()
+        let lan = DiscoveryScriptedPeer(sim, to: node, index: 0, host: "192.168.1.30")
+        let copier = DiscoveryScriptedPeer(sim, to: node, index: 1)
+        let record = ProviderRecord(endpoint: lan.endpoint, expiresAt: sim.unixSeconds + 60, webAddresses: [direct])
+        for round in 0..<12 {
+            let root = "root-\(round)"
+            let search = sim.request(.discoverProviders(rootCID: root), on: node)
+            sim.settleLookups(on: node, answering: [lan, copier])
+            for peer in [lan, copier] {
+                for asked in peer.takeFindProviders() {
+                    peer.send(.providersWithAddresses(
+                        rootCID: asked.rootCID, requestID: asked.requestID, records: [record]))
+                }
+            }
+            XCTAssertTrue(sim.run(until: { sim.result(of: search, on: node) != nil }, timeout: .seconds(5)))
+            XCTAssertEqual(sim.result(of: search, on: node)?.endpoints, [lan.endpoint], root)
+        }
     }
 
     /// Routes that differ only in their addresses are one route to a peer

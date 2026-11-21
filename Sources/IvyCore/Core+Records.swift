@@ -626,6 +626,11 @@ extension IvyCore {
             peerOrder.removeAll { $0 == hint.peer }
             peerOrder.append(hint.peer)
             var routes = routesByPeer[hint.peer] ?? []
+            var hint = hint
+            // A route once found dialable stays so, whoever names it again.
+            if routes.contains(where: {
+                $0.endpoint == hint.endpoint && $0.webAddresses == hint.webAddresses && $0.dialable
+            }) { hint.dialable = true }
             routes.removeAll { $0.endpoint == hint.endpoint && $0.webAddresses == hint.webAddresses }
             routes.append(hint)
             routesByPeer[hint.peer] = Array(routes.suffix(config.maxRoutesPerIdentity))
@@ -685,7 +690,10 @@ extension IvyCore {
         }
 
         var selected: [ProviderHint] = []
-        var seenRoutes: Set<DiscoveredProvider> = []
+        // A route named twice is taken from the hint that says most for it:
+        // dialable, then the provider's own, so no copy can displace it.
+        var selectedRoutes: [DiscoveredProvider: Int] = [:]
+        let weight = { (hint: ProviderHint) in (hint.dialable ? 2 : 0) + (hint.source == hint.peer ? 1 : 0) }
         for routeIndex in 0..<config.maxRoutesPerIdentity {
             for peer in peers {
                 for source in sources {
@@ -694,9 +702,13 @@ extension IvyCore {
                           selected.lazy.filter({ $0.peer == peer }).count
                             < config.maxRoutesPerIdentity else { continue }
                     let hint = routes[routeIndex]
-                    guard let endpoint = hint.endpoint,
-                          seenRoutes.insert(DiscoveredProvider(
-                            endpoint: endpoint, webAddresses: hint.webAddresses)).inserted else { continue }
+                    guard let endpoint = hint.endpoint else { continue }
+                    let route = DiscoveredProvider(endpoint: endpoint, webAddresses: hint.webAddresses)
+                    if let index = selectedRoutes[route] {
+                        if weight(hint) > weight(selected[index]) { selected[index] = hint }
+                        continue
+                    }
+                    selectedRoutes[route] = selected.count
                     selected.append(hint)
                 }
             }
