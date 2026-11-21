@@ -355,6 +355,9 @@ struct CodecWriter {
         case .setWebAddresses(let addresses):
             uint8(8)
             list(addresses) { $0.webAddress($1) }
+        case .setAutoRelay(let enabled):
+            uint8(9)
+            bool(enabled)
         }
     }
 
@@ -781,6 +784,8 @@ struct CodecReader {
             return .stopProviding(rootCID: try string())
         case 8:
             return .setWebAddresses(try list { try $0.webAddress() })
+        case 9:
+            return .setAutoRelay(try bool())
         default:
             throw Malformed()
         }

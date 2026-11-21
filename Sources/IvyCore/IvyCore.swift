@@ -37,8 +37,10 @@ public struct IvyCore: Sendable {
     /// relay ends the session of one that asks it to, so only these are asked.
     var relayingPeers: Set<PeerKey> = []
     /// What `webAddresses` tells every session, and this node's own provider
-    /// records carry.
+    /// records carry: the declared addresses, or the auto relays chosen.
     var localWebAddresses: [WebAddress] = []
+    var declaredWebAddresses: [WebAddress] = []
+    var autoRelay = false
     var router: Router
 
     // MARK: Links and sessions
@@ -549,6 +551,9 @@ public struct IvyCore: Sendable {
             } else {
                 relayingPeers.remove(key)
             }
+            refreshWebAddresses()
+        case .setAutoRelay(let enabled):
+            setAutoRelay(enabled)
         }
     }
 

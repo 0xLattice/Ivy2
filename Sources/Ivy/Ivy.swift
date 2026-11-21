@@ -583,6 +583,13 @@ public actor Ivy {
         return true
     }
 
+    /// With no addresses set by `setWebAddresses`, advertises up to four
+    /// relays this node can be reached through: direct peers marked with
+    /// `setRelaying` that advertise an address of their own. Off by default.
+    public func setAutoRelay(_ enabled: Bool) {
+        apply(.command(.setAutoRelay(enabled)))
+    }
+
     /// The web addresses `peer`'s current session last advertised; nil when
     /// it has no session or never sent any (a peer predating them).
     public func webAddresses(of peer: PeerID) -> [WebAddress]? {

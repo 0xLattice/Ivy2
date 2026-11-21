@@ -119,6 +119,7 @@ bare lower-case one.
 | 6 | `setRelaying` | `peerID`, `bool` relays |
 | 7 | `stopProviding` | `string` rootCID |
 | 8 | `setWebAddresses` | `list<webAddress>` |
+| 9 | `setAutoRelay` | `bool` |
 
 ### Job result
 

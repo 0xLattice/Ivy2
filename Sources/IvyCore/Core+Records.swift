@@ -1,3 +1,4 @@
+import Crypto
 #if canImport(FoundationEssentials)
 import FoundationEssentials
 #else
@@ -370,13 +371,54 @@ extension IvyCore {
         providerWalkSessions[peer.key] == peer.sessionID
     }
 
-    /// Replaces this node's web addresses: every session is told, and this
-    /// node's own records carry the new set.
+    /// Replaces this node's declared web addresses.
     mutating func setWebAddresses(_ addresses: [WebAddress]) {
-        guard WebAddress.isValidList(addresses), addresses != localWebAddresses else { return }
+        guard WebAddress.isValidList(addresses) else { return }
+        declaredWebAddresses = addresses
+        refreshWebAddresses()
+    }
+
+    mutating func setAutoRelay(_ enabled: Bool) {
+        autoRelay = enabled
+        refreshWebAddresses()
+    }
+
+    /// Recomputes what this node advertises: its declared addresses, or with
+    /// none and auto relay on, relays it can be reached through. On a change
+    /// every session is told, and this node's own records carry the new set.
+    mutating func refreshWebAddresses() {
+        let addresses = !declaredWebAddresses.isEmpty ? declaredWebAddresses
+            : autoRelay ? autoRelayAddresses() : []
+        guard addresses != localWebAddresses else { return }
         localWebAddresses = addresses
+        guard isRunning else { return }
         for key in sessions.keys.sorted() {
             if let ref = sessions[key]?.ref { sendWebAddresses(on: ref) }
+        }
+    }
+
+    /// Up to `WebAddress.maxCount` relays, as libp2p's AutoRelay picks them:
+    /// direct sessions the application says relay that advertise an address
+    /// of their own, each reached at its first. Choices are kept while they
+    /// stay candidates; vacancies go by a hash of both keys, so no key can
+    /// be ground to be every node's relay, and nodes spread over relays.
+    private func autoRelayAddresses() -> [WebAddress] {
+        var urls: [PeerKey: String] = [:]
+        for key in relayingPeers {
+            guard let session = endpointSession(for: key), links[session.link]?.isDirect == true,
+                  let url = session.webAddresses?.first(where: { $0.via == nil })?.url else { continue }
+            urls[key] = url
+        }
+        var chosen = localWebAddresses.compactMap(\.via).filter { urls[$0] != nil }
+        let rank = { (key: PeerKey) in
+            Array(SHA256.hash(data: self.localKey.rawRepresentation + key.rawRepresentation))
+        }
+        let vacancies = urls.keys.filter { !chosen.contains($0) }
+            .map { (key: $0, rank: rank($0)) }
+            .sorted { $0.rank.lexicographicallyPrecedes($1.rank) }
+        chosen += vacancies.prefix(max(0, WebAddress.maxCount - chosen.count)).map(\.key)
+        return chosen.prefix(WebAddress.maxCount).compactMap { key in
+            urls[key].map { WebAddress(url: $0, via: key) }
         }
     }
 

@@ -366,6 +366,18 @@ carry them. An answer too large for the asker's frame size drops the last
 records' addresses, then the last records. `discoverProviderAddresses` returns them; `discoverProviders`
 does not.
 
+A node with no addresses of its own may advertise relays instead, as libp2p's
+AutoRelay does: with `setAutoRelay(true)` and no declared addresses, it
+advertises up to four, one for each direct session the application marked with
+`setRelaying` whose peer advertised an address without `via`, as that address
+with `via` the relay. A relay stays chosen while it remains a candidate; a
+vacancy goes to the candidate first by SHA-256 of this node's key then the
+relay's, so no key can be ground to be every node's relay and nodes spread over
+relays. The choice is made again when a session opens or a relay's ends, a
+relay's addresses change, `setRelaying` or `setAutoRelay` changes, or the
+declared addresses do; sessions are told only when the result changes. A
+declared list always wins, and auto relay is off by default.
+
 `providerReach` chooses what walks may do. `.walk`, the default, dials peers
 not yet connected, at most `maxProviderWalkSessions` open or being dialed and
 never into `reservedOutboundConnectionSlots`. `.connectedPeers` walks only

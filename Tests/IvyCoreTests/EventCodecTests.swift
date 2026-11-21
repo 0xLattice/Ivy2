@@ -110,6 +110,7 @@ final class EventCodecTests: XCTestCase {
             WebAddress(url: "wss://relay.example", via: key(3)),
          ]))),
         ("command: setWebAddresses, none", .command(.setWebAddresses([]))),
+        ("command: setAutoRelay", .command(.setAutoRelay(true))),
         ("delivered", .delivered(DeliveryToken(21))),
         ("jobFinished: entries",
          .jobFinished(JobID(30), .entries([
@@ -258,6 +259,7 @@ final class EventCodecTests: XCTestCase {
             case .setContentSource: return "command.setContentSource"
             case .setRelaying: return "command.setRelaying"
             case .setWebAddresses: return "command.setWebAddresses"
+            case .setAutoRelay: return "command.setAutoRelay"
             }
         case .delivered: return "delivered"
         case .jobFinished(_, .entries): return "jobFinished.entries"
@@ -321,7 +323,7 @@ final class EventCodecTests: XCTestCase {
     }
 
     func testEveryCaseHasASample() {
-        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 40)
+        XCTAssertEqual(Set(Self.events.map { name($0.1) }).count, 41)
         XCTAssertEqual(Set(Self.effects.map { name($0.1) }).count, 38)
         XCTAssertEqual(Set(Self.events.map(\.0)).count, Self.events.count, "descriptions repeat")
         XCTAssertEqual(Set(Self.effects.map(\.0)).count, Self.effects.count, "descriptions repeat")

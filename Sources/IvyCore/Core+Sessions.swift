@@ -517,6 +517,8 @@ extension IvyCore {
         sessions[peerKey] = session
         offerSessionKey(session.ref)
         sendWebAddresses(on: session.ref)
+        // A session replacing a relay's has not said its addresses yet.
+        refreshWebAddresses()
         let token = blockForDelivery(id, connected: peerKey)
         emit(.peerConnected(token, authenticatedPeer(session)))
     }
@@ -625,7 +627,7 @@ extension IvyCore {
         let key = ref.key
         sessions.removeValue(forKey: key)
         sessionKeyByLink.removeValue(forKey: ref.link)
-        relayingPeers.remove(key)
+        let wasRelaying = relayingPeers.remove(key) != nil
         if providerWalkSessions[key] == session.sessionID.bytes { providerWalkSessions.removeValue(forKey: key) }
         if session.role == .endpoint {
             router.removePeer(key.peerID)
@@ -648,6 +650,7 @@ extension IvyCore {
             }
         }
 
+        if wasRelaying { refreshWebAddresses() }
         guard reconnect, isRunning,
               !configuredEndpoints(for: key, role: session.role).isEmpty else { return }
         scheduleReconnect(peer: key.peerID, role: session.role)

@@ -125,6 +125,10 @@ public enum Command: Sendable, Equatable {
     /// and carried by this node's provider records. Ignored unless
     /// `WebAddress.isValidList`.
     case setWebAddresses([WebAddress])
+    /// With no declared web addresses, advertise up to four relays this
+    /// node can be reached through, chosen from connected peers the
+    /// application says relay. Off by default.
+    case setAutoRelay(Bool)
 }
 
 public enum JobResult: Sendable, Equatable {

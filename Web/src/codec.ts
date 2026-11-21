@@ -147,7 +147,8 @@ export type Command =
   | { kind: 'setContentSource'; present: boolean }
   | { kind: 'setRelaying'; peer: PeerID; relays: boolean }
   | { kind: 'stopProviding'; rootCID: string }
-  | { kind: 'setWebAddresses'; addresses: WebAddress[] };
+  | { kind: 'setWebAddresses'; addresses: WebAddress[] }
+  | { kind: 'setAutoRelay'; enabled: boolean };
 
 export type JobResult =
   | { kind: 'entries'; entries: ContentEntry[] }
@@ -580,6 +581,9 @@ class Writer {
       case 'setWebAddresses':
         this.uint8(8);
         return this.list(value.addresses, (address) => this.webAddress(address));
+      case 'setAutoRelay':
+        this.uint8(9);
+        return this.bool(value.enabled);
     }
   }
 
@@ -985,6 +989,8 @@ class Reader {
         return { kind: 'stopProviding', rootCID: this.string() };
       case 8:
         return { kind: 'setWebAddresses', addresses: this.list(() => this.webAddress()) };
+      case 9:
+        return { kind: 'setAutoRelay', enabled: this.bool() };
       default:
         throw new Error(`unknown command ${tag}`);
     }
