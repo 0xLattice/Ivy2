@@ -5,7 +5,7 @@ import XCTest
 import Tally
 
 /// The iterative `findNode`: ported from 15.0.1's KademliaConvergenceTests,
-/// plus the lookup rules in docs/architecture.md "Routing and content".
+/// plus the lookup rules in docs/wire-protocol.md "Peer discovery".
 final class KademliaConvergenceTests: XCTestCase {
     private func endpoints(_ sim: Simulation, _ id: RequestID, on node: Simulation.Node) -> [PeerEndpoint]? {
         sim.result(of: id, on: node)?.endpoints

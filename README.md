@@ -1,19 +1,38 @@
 # Ivy
 
-Authenticated, bounded peer transport and routing for Swift.
+Ivy is Lattice's peer-to-peer networking library for Swift: authenticated,
+bounded peer transport and routing.
 
 Ivy proves which peer sent an accepted record and bounds the work needed to
-receive it. The caller decides what the record means.
+receive it. The caller decides what the record means. Ivy does not validate
+CIDs, traverse DAGs, store content, authorize processes, run consensus, or
+implement settlement.
 
-Ivy does not validate CIDs, traverse DAGs, store content, authorize processes,
-run consensus, or implement settlement.
+| Ivy owns | The caller owns |
+| --- | --- |
+| Session authentication and replay protection | Process authorization and protocol meaning |
+| Connection, frame, request, route, and lookup limits | Application batching and policy |
+| Endpoint routing and configured carriers | Service or chain topology |
+| Opaque Volume transfer | CID validation, DAG interpretation, and storage |
+| Signed sender attribution | Consensus, retention, fees, and settlement |
 
-Ivy is a deterministic core inside an I/O shell. `IvyCore` is the whole
-protocol as one value: bytes, time and requests go in as events, and everything
-it wants done comes out as effects. `Ivy` is the shell an application uses:
-it owns the sockets and the timer and keeps the API below.
+Sessions authenticate and replay-protect cleartext records. Ivy does not
+provide encryption or forward secrecy.
 
-## Start
+## Requirements
+
+- Swift 6
+- macOS 14+, iOS 17+, tvOS 17+, watchOS 10+, visionOS 1+, or Linux
+- One Ed25519 signing key per process identity
+
+```sh
+swift build
+swift test
+```
+
+## Quickstart
+
+### 1. Start a node
 
 ```swift
 import Crypto
@@ -32,34 +51,26 @@ await ivy.stop()
 
 A socket remains private until its signed session handshake completes.
 `start()` and `stop()` are ordered and restart-safe.
-Sessions authenticate and replay-protect cleartext records; Ivy does not provide
-encryption or forward secrecy.
 
-`IvyMode.overlay` uses authenticated Kademlia discovery. `.privateNetwork`
-accepts authenticated direct peers but disables discovery, routing, providers,
-relay, and broadcast; applications use directed messages for their own private
-protocol. Volume exchange is also disabled unless
-`privateContentExchangeEnabled` is explicitly set. A private source should use
-`authorizesVolumeRequest` when only some authenticated peers may read it.
-`.pinned(peer:)` accepts one endpoint identity and disables public discovery.
-Configured carriers govern outbound relay initiation; inbound offers grant
-transport only and never turn a carrier into an endpoint peer.
+### 2. Send and receive messages
 
-## Network roles
+```swift
+let result = await ivy.sendMessage(
+    to: peer,
+    topic: "sync",
+    payload: encodedMessage
+)
+```
 
-Ivy supplies a few small primitives that applications compose:
+Ivy delivers incoming messages through `IvyDelegate` with an authenticated
+sender. `.enqueued` means local queue acceptance, not remote delivery.
 
-- `broadcastMessage` announces gossip to the currently connected peers.
-- `sendMessage` carries directed sync requests and responses.
-- `fetchVolume` retrieves one complete bounded Volume from one provider, or
-  only from the sessions named (`from:`), asked one at a time.
-- `fetchVolumeBundle` retrieves, with one request, the Volumes a named peer bundles under a root.
+### 3. Serve Volumes
 
-The caller defines gossip IDs, deduplication, forwarding, sync order, and CID
-validation. Ivy authenticates the sender, bounds each operation, and keeps these
-application protocols independent.
-
-## Volumes
+A *Volume* is a root identifier and the complete set of entries served with
+it. The term is defined by
+[cashew](https://lattice.build/docs/protocol/cashew/); to Ivy a Volume's
+identifiers and bytes are opaque.
 
 Register a source:
 
@@ -75,197 +86,95 @@ await ivy.setContentSource(store)
 ```
 
 Return every entry of the complete Volume rooted at `rootCID`, the root's own
-included, or return `[]`. Wire identifiers are non-empty ASCII strings, which
+included, or return `[]`. Identifiers are non-empty ASCII strings, which
 keeps equality byte-exact; Ivy does not parse their meaning.
 
-Fetch it:
+`IvyContentSource` is Ivy's own protocol. It is not cashew's `ContentSource`,
+nor the `ContentSource` interface of the [JavaScript package](Web/README.md),
+which mirrors it in TypeScript.
+
+### 4. Fetch a Volume
 
 ```swift
 let response = await ivy.fetchVolume(rootCID: rootCID)
 ```
 
-Ivy streams one Volume across ordered frames (4 MiB each by default), up to
-64 MiB and 65,535 entries, and returns only after the whole archive is present,
-or `.empty`; it never follows links or returns a partial Volume. `servedBy`
-identifies the authenticated remote endpoint and is `nil` for a local result.
-This does not make Ivy a DAG layer: the caller validates every identifier and
-byte before storage.
+- Ivy returns only after the whole Volume is present, or `.empty`. It never
+  follows links or returns a partial Volume.
+- `servedBy` identifies the authenticated remote endpoint and is `nil` for a
+  local result.
+- The caller validates every identifier and byte before storage.
 
-Provider records are expiring routing hints, not proof of possession, validity,
-pinning, or authority. A record is what a peer announced for itself or what a
-lookup answer referred; a peer that served content is not recorded as a provider.
+The size limits are in
+[Volume limits](docs/wire-protocol.md#volume-limits), and the order a fetch
+looks in is in
+[Where a fetch looks](docs/wire-protocol.md#where-a-fetch-looks).
 
-A record also carries its provider's web addresses: `ws://` or `wss://` URLs a
-browser can dial, either the provider's own or one naming a peer to relay
-through. A node sets its own with `setWebAddresses(_:)`;
-`discoverProviderAddresses(rootCID:)` returns each provider with its
-addresses, and `webAddresses(of:)` what a connected peer advertised. They
-travel in two messages (tags 43 and 44) that peers predating them ignore;
-such peers keep getting the plain `providers` answer (tag 41).
+## What Ivy gives an application
 
-## Application messages
+Ivy supplies a few small primitives that applications compose into gossip,
+sync and retrieval:
 
-```swift
-let result = await ivy.sendMessage(
-    to: peer,
-    topic: "sync",
-    payload: encodedMessage
-)
-```
+| Call | Does |
+| --- | --- |
+| `broadcastMessage` | Announces gossip to the currently connected peers |
+| `sendMessage` | Carries directed sync requests and responses |
+| `fetchVolume` | Retrieves one complete bounded Volume from one provider, or only from the sessions named (`from:`), asked one at a time |
+| `fetchVolumeBundle` | Retrieves, with one request, the Volumes a named peer bundles under a root |
 
-Ivy delivers incoming messages through `IvyDelegate` with an authenticated
-sender. `.enqueued` means local queue acceptance, not remote delivery.
+The caller defines gossip IDs, deduplication, forwarding, sync order, and CID
+validation. Ivy authenticates the sender, bounds each operation, and keeps
+these application protocols independent.
+
+### A peer is not condemned for its content
 
 Each authenticated peer is an independent availability zone. Unavailable or
-caller-reported deficient content changes provider selection for that root; it
-does not disconnect the peer or prevent messages and other roots from using the
-same session. Tally only weights peers waiting for a serving slot under load; it
-never refuses a peer or the node's own requests.
+caller-reported deficient content changes provider selection for that root.
+It does not disconnect the peer or prevent messages and other roots from
+using the same session.
 
-## Driving the core yourself
+Ivy reads Tally only to weight peers waiting for a serving slot under load.
+It never refuses a peer, or the node's own requests, by it. Ivy also records
+traffic and protocol violations in Tally.
 
-A host with its own event loop, or a simulator, can skip the shell:
+## Modes
 
-```swift
-import IvyCore
+`IvyConfig.mode` chooses who a node talks to and which services it runs.
 
-var core = IvyCore(config: config)
-for effect in core.step(.start, now: now) { perform(effect) }
-// Feed it what happens: .connectionOpened, .received, .writable, .closed,
-// .tick at or after the last .wakeAt, .request, .delivered, .jobFinished.
-```
+| Mode | Accepts | Services |
+| --- | --- | --- |
+| `.overlay` (default) | Any peer | Authenticated Kademlia discovery, provider records, Volume exchange, relay, broadcast |
+| `.privateNetwork` | Authenticated direct peers | Directed messages only: no discovery, routing, providers, relay or broadcast. Volume exchange only when `privateContentExchangeEnabled` is set |
+| `.pinned(peer:)` | One endpoint identity | No public discovery |
 
-The core does no I/O and reads no clock, so the same events at the same times
-give the same effects. `IvySimulation` runs many cores over a simulated network
-on virtual time and replays a seeded run exactly:
+On a private network, applications use directed messages for their own
+private protocol. A private source should use `authorizesVolumeRequest` when
+only some authenticated peers may read it.
 
-```swift
-import IvySimulation
+### Relay
 
-let sim = Simulation(seed: 7)
-let a = sim.addNode { IvyConfig(signingKey: $0, stunServers: []) }
-let b = sim.addNode { IvyConfig(signingKey: $0, stunServers: []) }
-sim.start(a); sim.start(b)
-_ = sim.await(.connect(b.endpoint), on: a)
-sim.run(for: .seconds(30))
-print(sim.traceDigest)
-```
+A node that cannot dial a peer asks for a route through a third peer:
 
-## In a browser
+- from its configured `carriers` first;
+- then from connected peers the application marked with
+  `ivy.setRelaying(peer, true)`, at most four for one connect.
 
-`IvyCore` and `IvySimulation` build for WebAssembly, and behave there exactly
-as they do natively: `Wasm/run.sh` runs the core's test suite as Wasm and
-checks that a seeded network prints the same trace digest in both builds. The
-shell does not build for Wasm, because SwiftNIO does not.
+Peers do not announce in the handshake that they relay, so an application
+says it in a message of its own and tells its node. Only mark a peer that
+said so: one that does not relay ends the session of a peer that asks.
 
-```sh
-IVY_CORE_ONLY=1 swift build --swift-sdk swift-6.4.0-RELEASE_wasm
-```
-
-`IVY_CORE_ONLY=1` leaves the shell and SwiftNIO out of the package, and adds
-`IvyWasm`: the core behind a small C ABI. The core needs only
-`FoundationEssentials`, which keeps the binary small; full Foundation would
-add tens of megabytes of Unicode data.
-
-[`Web/`](Web/README.md) is the shell for JavaScript, in a browser or Node: a
-TypeScript package that loads that module and drives it, with the same
-methods as the `Ivy` actor. Events and effects cross between the two as
-bytes, in the format of [docs/event-codec.md](docs/event-codec.md).
-
-```sh
-IVY_WASM_SDK=swift-6.4.0-RELEASE_wasm Web/build.sh
-cd Web && npm test
-```
-
-It takes its connections as `Transport`s: a WebSocket to a node listening as
-below, or an in-memory pair. It keeps the Volumes it serves in IndexedDB,
-within a budget.
-
-A browser cannot open a TCP connection either. `IvyWebSocket` lets a node
-accept its peers over WebSocket, and dial other nodes the same way:
-
-```swift
-import IvyWebSocket
-
-let webSocket = WebSocketTransport(ivy: ivy)
-try await webSocket.listen(port: 8080)          // ws://<host>:8080/ivy
-
-try await webSocket.connect(to: peer, host: peer.host, port: 8080)
-// ...
-await webSocket.stopListening()
-```
-
-A WebSocket carries the same sessions as TCP: Ivy uses it as a byte stream and
-frames its own records inside binary messages. There is no TLS in the
-transport, so terminate `wss` in a proxy in front of it; then pass
-`trustForwardedFor: true` to `listen`, and only then, so peers are admitted by
-their own address and not the proxy's.
-
-The listener also answers STUN on the same port over UDP, so a browser learns
-its own address from the node it is connected to and from no one else. Behind
-a proxy, forward UDP on the port browsers dial to the listener's;
-`stun: false` leaves it out.
-
-Two nodes behind NATs cannot dial each other either. When they have met
-through a node that relays, `PunchConnector` moves them to a connection of
-their own: they tell each other where they are over the relayed session and
-both connect at the same moment, so each one's first packet opens its own NAT
-to the other's.
-
-```swift
-let punch = PunchConnector(ivy: ivy, localKey: config.publicKey, forwardingTo: delegate)
-// Make `punch` the node's delegate, and keep hold of it: it passes on to
-// `delegate` everything but its own topic, and a node holds its delegate weakly.
-try await ivy.start()
-// A relayed session to an endpoint is upgraded as it appears.
-```
-
-The relayed session comes first. A node that cannot dial a peer asks for a
-route to it: from its configured carriers, and from connected peers it was
-told relay, with `ivy.setRelaying(peer, true)`. Peers do not announce that in
-the handshake, so an application says it in a message of its own and tells
-its node. Only tell it of a peer that said so: one that does not relay ends
-the session of a peer that asks.
-
-Where the NATs do not allow it the relayed session stays as it was.
-`Punch/run.sh` puts two nodes behind NATs of their own, on Linux, and checks
-both outcomes.
-
-Two browsers cannot accept a connection from each other at all, so they meet
-through a node both are connected to, one that has `relayEnabled`. `Web/`'s
-`RtcConnector` then signals a WebRTC data channel over that relayed session
-and hands it to the core, whose handshake runs over it; the direct session
-replaces the relayed one and the node carries nothing more for the pair. See
-[Web/README.md](Web/README.md#browser-to-browser).
-
-## Boundary
-
-| Ivy owns | The caller owns |
-| --- | --- |
-| Session authentication and replay protection | Process authorization and protocol meaning |
-| Connection, frame, request, route, and lookup limits | Application batching and policy |
-| Endpoint routing and configured carriers | Service or chain topology |
-| Opaque Volume transfer | CID validation, DAG interpretation, and storage |
-| Signed sender attribution | Consensus, retention, fees, and settlement |
+An inbound route offer grants transport only and never turns a carrier into
+an endpoint peer. The rules are in [Relay](docs/wire-protocol.md#relay).
 
 ## Documentation
 
-The README, architecture, correctness invariants and event codec are published
-at [lattice.build/docs](https://lattice.build/docs/protocol/ivy/).
+Published at [lattice.build/docs](https://lattice.build/docs/protocol/ivy/).
 
-- [Architecture](docs/architecture.md)
-- [Correctness invariants](docs/correctness-invariants.md)
-- [Moving from 15.x](docs/migration.md)
-- [Event codec](docs/event-codec.md)
-- [Ivy in JavaScript](Web/README.md)
-
-## Requirements
-
-- Swift 6
-- macOS 14+, iOS 17+, tvOS 17+, watchOS 10+, visionOS 1+, or Linux
-- One Ed25519 signing key per process identity
-
-```sh
-swift build
-swift test
-```
+| Page | Read it to |
+| --- | --- |
+| [Wire protocol](docs/wire-protocol.md) | Look up what peers send: transports, handshake, records, message tags, bounds, routing, relay, signalling |
+| [Architecture](docs/architecture.md) | Understand how Ivy is built, drive `IvyCore` from your own event loop or a simulation, supply a stream, punch through NATs |
+| [Correctness invariants](docs/correctness-invariants.md) | Review the laws Ivy must keep, by ID |
+| [Ivy in JavaScript](Web/README.md) | Run Ivy in a browser or Node, serve browsers from a node over WebSocket, connect two browsers over WebRTC |
+| [Host event codec](docs/event-codec.md) | Write a host that drives the WebAssembly core |
+| [Upgrading from 15.x](docs/migration.md) | Move an application from Ivy 15.x |

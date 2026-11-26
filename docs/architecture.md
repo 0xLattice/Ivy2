@@ -1,7 +1,10 @@
-# Architecture
+# Ivy architecture
 
-Ivy turns an untrusted byte stream into bounded records attributed to peer keys.
-Authentication proves key control, not application authority.
+How Ivy is built: a deterministic core that makes every decision, inside a
+shell that does the I/O. Read this to work on Ivy, to drive the core from
+your own event loop, or to supply a new kind of connection.
+
+What peers send each other is in the [wire protocol](wire-protocol.md).
 
 ```text
 caller: authority, validation, storage, protocol meaning
@@ -11,7 +14,20 @@ Ivy (shell): sockets, one timer, delegate and storage calls
 IvyCore: admission, sessions, routing, content, relay
 ```
 
-## Core and shell
+Ivy turns an untrusted byte stream into bounded records attributed to peer
+keys. Authentication proves key control, not application authority.
+
+## Targets
+
+| Target | What it is |
+| --- | --- |
+| `IvyCore` | The whole protocol as one value. No I/O, no clock. Builds for WebAssembly |
+| `Ivy` | The shell an application uses: TCP, the timer, STUN, the delegate and content source |
+| `IvyWebSocket` | Streams over WebSocket, for peers that cannot open TCP. A separate product, so a node that does not want it does not build it |
+| `IvySimulation` | Many cores over a simulated network on virtual time |
+| `IvyWasm` | The core behind a small C ABI, for the [JavaScript shell](../Web/README.md) |
+
+## The core
 
 Every decision Ivy makes is made by `IvyCore`, a value with one entry point:
 
@@ -19,586 +35,265 @@ Every decision Ivy makes is made by `IvyCore`, a value with one entry point:
 mutating func step(_ event: Event, now: Timestamp) -> [Effect]
 ```
 
-Events are everything that can happen to Ivy: a connection opened, bytes
+**Events** are everything that can happen to Ivy: a connection opened, bytes
 arrived, a connection can be written again, time passed (`tick`), the
-application asked for something, a storage job finished. Effects are everything
-Ivy wants done: dial, write, close, stop or resume reading a connection, deliver
-a message, start or cancel a storage job, answer a request, and `wakeAt`, the
-earliest deadline it holds. The core never waits, reads a clock, opens a socket,
-starts a task or draws randomness it was not given, so the same events at the
-same times always give the same effects. `IvyCoreTests` asserts this on a
-multi-node run, and the same seed gives the same trace in separate processes.
+application asked for something, a storage job finished.
 
-What the old implementation expressed with `await` is state in the core:
+**Effects** are everything Ivy wants done: dial, write, close, stop or resume
+reading a connection, deliver a message, start or cancel a storage job,
+answer a request, and `wakeAt`, the earliest deadline it holds.
 
-| Was | Is |
+The core never waits, reads a clock, opens a socket, starts a task or draws
+randomness it was not given. The same events at the same times always give
+the same effects. `IvyCoreTests` asserts this on a multi-node run, and the
+same seed gives the same trace in separate processes.
+
+### What the core holds as state
+
+Nothing in the core is a suspended task. Each thing that takes time is a
+value it can inspect:
+
+| Concern | How the core holds it |
 | --- | --- |
-| 13 one-shot timers and 2 repeating ones | One deadline table; `tick` expires what has passed, and each step emits one `wakeAt` |
-| Awaiting the delegate inline | `deliver(token, …)`; the connection's next record is held, and the connection not read, until `delivered(token)` |
-| A lock-shared inbound byte budget | Counters charged as bytes join a frame and released when its record has been handled; exhaustion emits `pauseReading`, release emits `resumeReading` |
-| Waiting on channel writability | The core counts what it wrote since the last `writable(conn)` and holds chunk cursors, relay forwards, Volume requests and application waiters past 64 KiB. Keepalives, "not available", handshake and relay control records are still written, from a reserve of 64 KiB more, so a peer waiting on one is not left to time out while a Volume is in flight |
-| Task groups in a lookup | A stored query: candidates, who was asked, the round, what is outstanding |
-| A task per served request | A serving state with an explicit phase; a granted slot advances it in the same step |
-| Run and operation generations | Nothing: a stopped run's state is gone, and a late event names an unknown identifier |
+| Timers | One deadline table. `tick` expires what has passed, and each step emits one `wakeAt` |
+| Delivery to the application | `deliver(token, …)`. The connection's next record is held, and the connection not read, until `delivered(token)` |
+| Inbound byte budget | Counters charged as bytes join a frame and released when its record has been handled. Exhaustion emits `pauseReading`, release emits `resumeReading` |
+| Outbound backpressure | The core counts what it wrote since the last `writable(conn)` and holds chunk cursors, relay forwards, Volume requests and application waiters past 64 KiB |
+| A lookup | A stored query: candidates, who was asked, the round, what is outstanding |
+| A served request | A serving state with an explicit phase. A granted slot advances it in the same step |
+| A relay forward waiting for room | A stored deadline |
+
+Keepalives, "not available", handshake and relay control records are still
+written past the 64 KiB mark, from a reserve of 64 KiB more, so a peer
+waiting on one is not left to time out while a Volume is in flight. Such a
+record is dropped only when the transport has stopped draining.
+
+### Injected dependencies
+
+Signatures, traffic evidence and randomness are injected:
+
+| Protocol or type | Production | Simulation |
+| --- | --- | --- |
+| `IvySignatureScheme` | Ed25519 | A repeatable stand-in |
+| `PeerLedger` | Tally | A ledger of its own |
+| `CoreRandom` | The system generator | A seeded generator |
+
+`IvySimulation` needs stand-ins because a session ID covers both handshake
+signatures and decides which of two simultaneous sessions survives.
+
+Signing and verification run inside the step. The core records traffic and
+protocol violations into the ledger and reads only `servingPriority`, when
+content requests contend for serving slots. Every Volume chunk served is
+reported through `recordServed`, which debits the peer's standing by its
+archive bytes. Tally keeps its own clock.
+
+## The shell
 
 The shell (`Ivy`, `StreamShell`, `STUNClient`) owns everything the core does
 not: connections, the single timer, STUN, calls into `IvyDelegate` and
-`IvyContentSource`, and the map from request to waiting caller.
+`IvyContentSource`, and the map from request to waiting caller. It decides
+nothing.
 
-## Transports
+### The contract for a shell
 
-A connection is a `TransportConnection`: an ordered, reliable byte stream that
-delivers bytes only when asked, says whether it has room for more, and reports
-its close once. Framing, byte budgets, admission, the handshake and sessions
-are all above it and the same for every stream. TCP is one supplier
+`IvyCore.step` is public. A host with its own event loop, or a simulator,
+can drop the `Ivy` actor and feed the core itself:
+
+```swift
+import IvyCore
+
+var core = IvyCore(config: config)
+for effect in core.step(.start, now: now) { perform(effect) }
+```
+
+Whoever plays the shell must:
+
+1. Report a new connection with `connectionOpened` and not read it until the
+   core emits `resumeReading`. Stop on `pauseReading`.
+2. Deliver bytes with `received` in order, one read at a time: issue the next
+   read after the step that took the last.
+3. Send `writable(conn)` whenever everything written to a connection has left
+   the send buffer.
+4. Send `tick` at or after the instant in the latest `wakeAt`.
+5. Answer every `deliver` and `peerConnected` with `delivered(token)`, and
+   every `startJob` with exactly one `jobFinished`, even after `cancelJob`.
+6. Answer `dial` with `connectionOpened(…, .outbound(dial), …)` or
+   `dialFailed`.
+7. Report the connection's end with `closed`.
+
+A host that cannot hold Swift values passes events and effects as bytes: see
+the [host event codec](event-codec.md).
+
+### Simulation
+
+`IvySimulation` runs many cores over a simulated network on virtual time and
+replays a seeded run exactly:
+
+```swift
+import IvySimulation
+
+let sim = Simulation(seed: 7)
+let a = sim.addNode { IvyConfig(signingKey: $0, stunServers: []) }
+let b = sim.addNode { IvyConfig(signingKey: $0, stunServers: []) }
+sim.start(a); sim.start(b)
+_ = sim.await(.connect(b.endpoint), on: a)
+sim.run(for: .seconds(30))
+print(sim.traceDigest)
+```
+
+## Connections
+
+### Supplying a stream
+
+A connection is a `TransportConnection`: an ordered, reliable byte stream
+that delivers bytes only when asked, says whether it has room for more, and
+reports its close once. Framing, byte budgets, admission, the handshake and
+sessions are all above it and the same for every stream. TCP is one supplier
 (`TCPStream`) and takes the same path as any other.
 
 Whoever establishes a stream hands it to Ivy:
 
-- inbound, `reserveInboundAdmission(observedHost:)` then `accept(_:admission:)`.
-  The lease is taken before anything is spent on the peer, admits one stream of
-  the netgroup it was reserved for, and belongs to the run that issued it.
-- outbound, `connect(to:over:)`. The stream is closed unless it becomes the
-  peer's session, and there is no falling back to another route or a carrier.
+| Direction | Calls | Notes |
+| --- | --- | --- |
+| Inbound | `reserveInboundAdmission(observedHost:)`, then `accept(_:admission:)` | The lease is taken before anything is spent on the peer, admits one stream of the netgroup it was reserved for, and belongs to the run that issued it |
+| Outbound | `connect(to:over:)` | The stream is closed unless it becomes the peer's session. There is no falling back to another route or a carrier |
 
 A stream must report the host its peer was observed at: netgroup admission
 keys on it. Its address is not one Ivy can dial, so it is kept out of routing
 unless the peer advertises a listen address of its own.
 
+### Admission
+
+Inbound capacity is reserved by global and netgroup limits before a
+connection is read: the shell reports a new connection unread, and the core
+answers with `resumeReading` or `close`. Rejected sockets cannot buffer
+protocol input. The limits are in
+[Bounds](wire-protocol.md#connections-and-work).
+
+A socket that has not completed the [handshake](wire-protocol.md#handshake)
+is pending: absent from routing, delegates, content and application messages.
+
 ### WebSocket
 
-`IvyWebSocket` supplies streams over WebSocket, for a peer that cannot open a
-TCP connection: a browser. It is a separate product, so a node that does not
-want it does not build it. `WebSocketTransport` listens and dials for one
-`Ivy`, and hands each upgraded connection over by the two calls above.
+`WebSocketTransport` listens and dials for one `Ivy`, and hands each upgraded
+connection over by the two calls above. What goes on the socket is in
+[Transports](wire-protocol.md#websocket); running the listener for browsers
+is in [Ivy in JavaScript](../Web/README.md#accepting-browsers-on-a-node).
 
-Ivy frames its own records, so the socket is used only as an ordered byte
-stream. Binary payloads are concatenated as they arrive, fragmented messages
-included, and where a message ends means nothing. A text frame, a reserved bit,
-a frame masked the wrong way round and a frame over the limit each close the
-connection with a close frame. Ping is answered with pong, the latest only if
-the peer is not reading its answers.
+How the listener bounds a peer:
 
-- Outbound, a record is split into frames of at most 64 KiB, each a message of
-  its own. A receiver holds a frame until it has all of it, and a control frame
-  cannot interrupt one, so the frame is kept to the write high-water mark.
-- Inbound, a frame may be up to 1 MiB. NIO buffers a frame whole before any of
-  it is delivered, so that is what a peer can make one connection hold beyond a
-  socket read, before the core's byte budgets apply. It is above what Ivy sends
-  because a browser sends each message as one frame; a peer written for Ivy
-  should not send messages larger than 64 KiB either.
-- Reads are pulled as on TCP: the socket is not read unless the core asked for
-  bytes, so a connection held back leaves its data in the kernel. Control
-  frames are behind that data, so a ping is answered when the connection is
-  next read, not while it is held.
-- Admission is reserved when the upgrade request arrives and before it is
-  granted. A refused peer gets `503` and is never upgraded; another path gets
-  `404`, and a request that is not a WebSocket upgrade `426`.
-- A socket that has not finished the HTTP exchange holds no admission yet, so
-  the listener bounds those itself: 256 at once, ten seconds each.
+- **Reads are pulled, as on TCP.** The socket is not read unless the core
+  asked for bytes, so a connection held back leaves its data in the kernel.
+  Control frames are behind that data, so a ping is answered when the
+  connection is next read, not while it is held. Only the latest ping is
+  answered if the peer is not reading its answers.
+- **Outbound, a record is split into frames of at most 64 KiB**, each a
+  message of its own. A receiver holds a frame until it has all of it, and a
+  control frame cannot interrupt one, so the frame is kept to the write
+  high-water mark.
+- **Inbound, a frame may be up to 1 MiB.** NIO buffers a frame whole before
+  any of it is delivered, so that is what a peer can make one connection hold
+  beyond a socket read, before the core's byte budgets apply.
+- **Admission is reserved when the upgrade request arrives**, before it is
+  granted.
+- **A socket that has not finished the HTTP exchange holds no admission
+  yet**, so the listener bounds those itself: 256 at once, ten seconds each.
 
-There is no TLS in this target. `wss` is terminated in front of the listener,
-by a reverse proxy or a load balancer. Behind one, every socket comes from the
-proxy, so `trustForwardedFor` takes the peer's address from the last hop of
-`X-Forwarded-For`, the one the proxy itself wrote, and refuses a request
-without it. Enable it only behind a proxy that sets the header and that
-nothing can bypass: the address decides netgroup admission, and a peer that
-reaches the listener directly would choose its own. It is off by default.
+### Punching through NATs
 
-The listener also answers STUN Binding requests, on the same port over UDP,
-unless `listen` is told `stun: false`. A page asks it for its own address
-before connecting to another page; see Browser to browser. The answer is the
-source address of the request, as XOR-MAPPED-ADDRESS, and nothing else in
-STUN is implemented: no credentials, no attributes read, no TURN.
+Two nodes behind NATs cannot dial each other. When they have met through a
+node that relays, `PunchConnector` (`Sources/Ivy`) moves them to a connection
+of their own.
 
-- UDP does not pass through the proxy that terminates `wss`. The page asks at
-  the host and port it dialled, so UDP to that port must reach this one.
-- The source of a request is not verified, so an answer can be aimed at
-  someone who did not ask. It is 32 bytes for a request of 20 or more (44 over
-  IPv6), and one node sends at most 20 a second to one address (one IPv6 /64)
-  and answers at most 4096 addresses in a second.
+```swift
+let punch = PunchConnector(ivy: ivy, localKey: config.publicKey, forwardingTo: delegate)
+// Make `punch` the node's delegate, and keep hold of it: it passes on to
+// `delegate` everything but its own topic, and a node holds its delegate weakly.
+try await ivy.start()
+// A relayed session to an endpoint is upgraded as it appears.
+```
 
-The listener does not look at `Origin`. Any page may open a socket, as any
-peer may open a TCP connection; what it can do is decided by the session
-handshake.
+How it works:
 
-The other end in a page is `Web/src/websocket.ts`, over the browser's own
-WebSocket. That one cannot be read on request: every message is handed over
-as it arrives, so a connection the core holds back is not held in the kernel
-there but in a queue in the page. A peer there cannot be slowed, only
-dropped: the stream closes when 128 MiB waits unread. It sends messages of
-at most 64 KiB, and delivers at most that much for each request.
+1. The connector stands between a node and its delegate. When a relayed
+   session to an endpoint appears, the two connectors exchange addresses on
+   it ([`ivy.punch/1`](wire-protocol.md#node-to-node-behind-nats-ivypunch1)).
+2. Both connect at the same moment, so each one's first packet opens its own
+   NAT for the other's.
+3. The stream that results is given to `connect(to:over:)` at one end and
+   `accept` at the other, and the direct session
+   [replaces the relayed one](wire-protocol.md#moving-to-a-direct-session).
 
-The core also builds for WebAssembly, where `Int` is 32 bits, and gives the
-same trace there as natively. Two rules keep that true: a size limit is
-clamped when it becomes an `Int`, never converted outright, and random draws
-go through `UInt64` (`CoreRandom.below`, `CoreRandom.shuffled`), never through
-the standard library's `Int`-based ranges and shuffle. The core imports
-`FoundationEssentials` where it exists, not Foundation.
+The core knows nothing of it. Where the NATs do not allow it the relayed
+session stays as it was. The `log` option is told how each attempt ended, in
+a line.
 
-Signatures, traffic evidence and randomness are injected (`IvySignatureScheme`,
-`PeerLedger`, `CoreRandom`). Production uses Ed25519, Tally and the system
-generator. `IvySimulation` uses repeatable stand-ins, because a session ID
-covers both handshake signatures and decides which of two simultaneous
-sessions survives.
+The relayed session comes first. A node that cannot dial a peer asks for a
+route to it: see [Whom a node asks](wire-protocol.md#whom-a-node-asks).
 
-## Connections
+A transport is a `PunchTransport`. `TCPPunch` is the one there is:
 
-Inbound capacity is reserved by global and netgroup limits before a connection
-is read: the shell reports a new connection unread, and the core answers with
-`resumeReading` or `close`. Rejected sockets cannot buffer protocol input. Capacity is a hard cap: Ivy rejects excess peers rather than evicting
-an authenticated connection by reputation.
+- Each end takes a port of the system's choosing, listens on it, and connects
+  from it to the port the other named, again and again until the window
+  closes.
+- Both ends leave from the port the other aims at, so they can only have made
+  one connection, whether the two first packets crossed (a simultaneous open)
+  or one arrived after the other end's NAT had opened.
+- It tells its peer the port it bound, so it needs a NAT that keeps a
+  connection's port. One that gives each connection another port cannot be
+  reached this way, and those peers stay relayed.
+- IPv4 only.
 
-A pending socket is absent from routing, delegates, content, and application
-messages. Promotion requires a signed transcript over both identities, fresh
-nonces, route binding, and bounded metadata, followed by the initiator's signed
-finish.
+`Punch/run.sh` checks this on Linux with network namespaces: two nodes behind
+NATs that are first shown to refuse a stranger, NATs that drop and NATs that
+reset what they did not ask for, and a NAT that changes ports, where the two
+must stay on the relayed session.
 
-Application records bind sender, receiver, session ID, sequence, and payload.
-Receive sequences strictly increase. Simultaneous sessions for one peer and
-role converge on the smaller session ID. Records are authenticated but not
-encrypted; confidentiality belongs above or below Ivy.
+## WebAssembly build
 
-A record is signed with the sender's identity key until both sides have
-exchanged X25519 shares, then MACed: SIGMA-style sign-then-MAC, as in TLS
-1.3, except that the shares follow the handshake instead of riding in it, so
-the hellos, and every peer that does not know the shares, are unchanged. Each
-side sends a `sessionKey` message as its first record, signed like any other,
-so the share is bound to the session ID and both identities; there is no key
-confirmation beyond the first MACed record verifying. A side that has sent
-its share and received the peer's derives one HMAC-SHA256 key per direction
-and drops its private share:
+`IvyCore` and `IvySimulation` build for WebAssembly and give the same trace
+there as natively. `Wasm/run.sh` runs the core's test suite as Wasm and
+checks that a seeded network prints the same trace digest in both builds. The
+shell does not build for Wasm, because SwiftNIO does not.
 
-- key = HKDF-SHA256(ikm: the X25519 secret, salt: session ID, info: D ‖
-  sender ‖ receiver ‖ sender's share ‖ receiver's share), 32 bytes, where D
-  is "ivy.session.mac.v1" after its length as a big-endian UInt32;
-- MAC = HMAC-SHA256(key, D ‖ session ID ‖ sequence as a big-endian UInt64 ‖
-  payload).
+`Int` is 32 bits there. Two rules keep the trace the same:
 
-A MACed record (tag 5) has the signed record's fields with the 32-byte MAC in
-place of the signature. It is sent only where the same record signed would
-fit, so what fits a frame does not depend on which kind either hop of a relay
-uses. An all-zero secret (a low-order share) makes no keys. Signed records
-stay accepted on every session, so a peer's records in flight across the
-switch, and every record of a peer that sends no share, still verify. One
-sequence counts both kinds. A peer that sends no share keeps the session
-signed.
+- A size limit is clamped when it becomes an `Int`, never converted outright.
+- Random draws go through `UInt64` (`CoreRandom.below`,
+  `CoreRandom.shuffled`), never through the standard library's `Int`-based
+  ranges and shuffle.
 
-Wire/session protocol v9 rejects v8 during authentication. V9 introduces
-multi-frame complete-Volume replies, which cannot safely share the older
-one-frame Volume contract.
+The core imports `FoundationEssentials` where it exists, not Foundation,
+which keeps the binary small: full Foundation would add tens of megabytes of
+Unicode data.
 
-### Adding to the wire without a new version
-
-The session version changes only when an existing record or message changes.
-Everything else is an addition, and an addition needs no version:
-
-- An addition is a new message tag. An existing message never changes its
-  encoding or its meaning.
-- Ivy sends a new message only to a session its caller names. Whether a peer
-  speaks it is the application's to learn (its own hello) and to tell Ivy by
-  naming the peer; Ivy's hello carries no capabilities. The exceptions are
-  `sessionKey` and `webAddresses` (tag 43), which Ivy sends to every session
-  itself: one side has to speak first. Every Ivy2 peer (2.0.0 on) ignores
-  a tag it does not know. A peer that sends
-  `webAddresses` has said it speaks `providersWithAddresses` (tag 44).
-- A message whose tag this version does not know is ignored: the session
-  stays up and nothing is recorded against the peer. A known message that
-  does not decode still ends the session as a signed protocol violation.
-
-An ignored message costs what any message costs before it is understood: its
-signature or MAC and its sequence are checked and its bytes counted as received. It is
-bounded as every message is, by the negotiated frame size and the inbound
-byte budget, and it is cheaper than a known message nobody wanted. Peers that
-predate this rule (through 14.0.0) end the session on an unknown tag, which is
-why the second point is a rule and not a courtesy.
-
-Treat every authenticated endpoint connection as an independent availability
-zone, not a verdict about the peer. Application timeouts, unavailable content,
-and caller-reported deficiency leave the session open. Only transport safety
-failures such as invalid authentication, signed protocol violations, or hard
-bound exhaustion close it.
-
-## Bounds
-
-- Each node advertises the maximum frame body it will accept (inbound) in its
-  handshake; the default is 4 MiB and it is operator-tunable via
-  `protocolMaxFrameSize`. A node never sends a frame larger than the peer
-  advertised it will accept, and on a relayed route it is further capped at the
-  carrier connection's negotiated size. Inbound framing is validated against the
-  node's own local cap.
-- Each connection's inbound byte budget scales with the local frame cap: it may
-  hold at most two maximum frame bodies plus a header (2·cap + 4). One node-wide
-  byte budget also covers bytes actually received in partial frames, relayed
-  records, and queued records; its default is 64 MiB and is operator-tunable via
-  `maxInboundBufferedBytes`. Exhaustion stops reading a direct connection until
-  bytes are released, so TCP holds the sender; a relayed connection, which
-  cannot be held back on its own, is closed. Neither blames the peer.
-- Canonical session metadata is limited to 64 KiB.
-- Strings, collections, connections, netgroups, pending requests, waiters,
-  candidates, routing entries, provider hints, and relay routes are bounded.
-- Framing overhead is subtracted from each Volume chunk before it is framed.
-- A complete Volume is at most 64 MiB and 65,535 members. Its ordered chunks
-  share one request, root, authenticated endpoint session, and node run; partial
-  assemblies reserve their declared size from a 128 MiB node-wide receive cap.
-  Source materializations pessimistically reserve the same bounded capacity, so
-  concurrent serving cannot multiply the per-Volume limit.
-- A connection's records are handled in order, one at a time; a record the
-  application is still handling holds the next, and the connection is not read
-  meanwhile. Local and remote content callbacks share one concurrency cap; a
-  callback that ignores cancellation keeps its slot until it actually exits.
-- A physical dial keeps its connection-cap reservation until the shell reports
-  how it ended, including across stop and restart.
-
-Ivy serves any authenticated peer and never rate-limits its own requests.
-Tally records peer-global traffic evidence and compares peers only when
-content requests wait for a serving slot: waiting peers share freed slots in
-proportion to their standing, and a peer with none still advances. Standing
-rises by bytes the peer paid for and by verified content it served this node,
-and falls by the Volume archive bytes this node served it, contended or not. Ivy
-does not evict an authenticated connection by score. Evidence decays, and
-application content deficiency remains root-scoped rather than becoming global
-blame.
-
-## Application protocols
-
-Ivy's generic records and Volume exchange are enough to compose gossip,
-sync, and retrieval. Broadcast messages announce gossip to current peers;
-directed messages carry sync control; Volume requests retrieve the bytes. Gossip identity, deduplication, forwarding, sync semantics, CID
-validation, and storage remain caller policy.
-
-## Routing and content
-
-Overlay mode uses correlated `findNode` responses from authenticated Kademlia
-peers. Address scope, mode, identity work, connection capacity, and netgroup
-policy apply before admission. Referrals are lookup candidates, not routing
-entries; only a successful authenticated session promotes an endpoint into
-routing. Private-network mode exposes only authenticated direct messages; it
-does not run discovery, routing, provider, content, relay, or broadcast services.
-A referral must use a globally routable IP. A private or loopback
-self-advertisement is usable only when it exactly matches the observed socket
-address. Pinned mode admits one endpoint identity. Ivy has no peer-exchange
-protocol. STUN contributes an observed host only; configure `externalAddress`
-with an IP literal when the externally reachable TCP port differs from
-`listenPort`.
-
-Identifiers are non-empty ASCII wire strings, so equality is byte-exact without
-assigning them semantics.
-
-A Volume request names only its root. The source returns one complete bounded
-Volume, which Ivy canonically orders and streams in sequential frames. Each
-frame still obeys the same negotiated route cap (4 MiB by default). Competing providers assemble
-independently, and replacement sessions, gaps, duplicates, conflicting stream
-metadata, and malformed archives discard only that provider's attempt. Ivy
-returns no `AttributedVolumeResponse` until one archive is complete and contains
-the requested root. Identifiers and bytes remain opaque: Ivy neither validates
-content addressing nor interprets or traverses a DAG. A request waiting for
-capacity never times out. `requestTimeout` starts once a Volume request holds
-both its slot and its byte reservation (its authorization callback runs before that, untimed); from then
-Ivy cancels serving at the deadline. Blocked writers release their reservation, while a storage
-callback that ignores cancellation remains counted until it actually exits.
-
-A bundle request (added after v9 under the rule above, so sent only to the
-sessions `fetchVolumeBundle` is given) names a root and asks for every Volume
-the source bundles under it. The source names the bundle's Volume roots, the root's own first;
-what a bundle means is the application's. Ivy authorizes, reads, reserves,
-times and streams each Volume exactly as a requested one, in turn, then sends
-`volumeBundleEnd`. Between two Volumes the request gives up its serving slot
-and queues for the next, so under contention a bundle is served no faster
-than the same Volumes requested one at a time. A Volume that cannot
-be sent is left out; an end with no Volume before it says the peer holds no
-bundle for the root, which is distinct from `contentUnavailable`. The
-requester keeps every Volume completed before the answer ended, however it
-ended, each counted against its in-flight Volume budget until the fetch
-returns: a bundle is never required to be complete, and the caller fetches
-what it still lacks as single Volumes. The result says whether the answer
-ended with the peer's end marker; whether to ask again a peer whose answer did
-not is the caller's to decide.
-
-A Volume fetch asks the node's own source, then known providers, then the
-peers already connected, then fresh discovery. `requestTimeout` bounds each
-request of it; there is no deadline over the whole fetch. A local read that is
-cancelled remains counted until it exits. Provider hints are bounded and expiring: each is a peer's own announcement or a
-referral from a lookup answer, never a note that a peer served the root; a
-source's referrals never evict an announcement. A failed local dial
-does not erase a hint, and a failed address does not suppress a healthy address
-for the same identity.
-
-Announcing and fresh discovery walk the network the way libp2p's Kademlia DHT
-and BitTorrent's BEP 5 do, over the existing messages. A walk is an iterative
-`findNode` for the root; it ends when the `kBucketSize` closest peers that
-answered have all been asked. A peer that times out or leaves drops out of its
-result; a referral naming a route not yet tried brings it back, once per walk.
-A search is one walk that asks every peer it queries for providers in the same
-round, and it ends when the walk and those answers end. However many providers
-early answers name, the walk still reaches the peers nearest the root. Searches
-for one root share one walk.
-
-An announcement walks to the root's closest peers and tells those that
-answered; if none did, it tells the closest peers already connected. Announcing
-a root again while its walk runs updates the expiry that walk sends. A receiver
-stores every valid announcement; the per-source quota and table ceiling bound
-it. `stopProviding` drops the node's own record and any announcement not yet
-sent; records already sent expire on their own, since the wire has no
-withdrawal. Ivy does not republish: when and how often to announce a root again
-is the caller's choice.
-
-A peer may advertise up to four web addresses, `ws://` or `wss://` URLs of at
-most 256 printable ASCII bytes, for a browser that cannot dial a TCP endpoint.
-One without `via` is where the peer itself listens; one with `via` says
-"connect to peer `via` at this URL and relay through it". Every session is
-sent the node's set (`webAddresses`, tag 43) when it opens, empty if none, and
-again whenever `setWebAddresses` changes it; what a peer sent last replaces
-what it sent before. A provider's own records are answered with the
-addresses it sent last, kept once per provider however many records it
-holds; a node's own records carry its own. A record referred by an answer
-keeps the addresses it came with, and the same endpoint referred with other
-addresses is another route beside it, as another endpoint would be, so a
-referral cannot replace a provider's addresses. A referred record whose
-endpoint the endpoint policy refuses (a private or loopback host) is still
-kept when it carries web addresses, for those alone: Ivy never dials that
-endpoint, `discoverProviders` and the `providers` answer (tag 41) never name
-it, and only `discoverProviderAddresses` and tag 44 do. Without addresses it is
-dropped as before. A
-`findProviders` from a peer that has sent tag 43 is answered with
-`providersWithAddresses` (tag 44), the records of `providers` (tag 41) each
-followed by its addresses; any other peer is answered with tag 41 exactly as
-before, so peers predating web addresses never see tag 44 and ignore tag 43.
-Addresses are the advertiser's unauthenticated claim, as a record's endpoint
-is: the dialer proves the key when it connects. They play no part in which
-records are kept, evicted or counted, and are bounded with the records that
-carry them. An answer too large for the asker's frame size drops the last
-records' addresses, then the last records. `discoverProviderAddresses` returns them; `discoverProviders`
-does not.
-
-A node with no addresses of its own may advertise relays instead, as libp2p's
-AutoRelay does: with `setAutoRelay(true)` and no declared addresses, it
-advertises up to four, one for each direct session the application marked with
-`setRelaying` whose peer advertised an address without `via`, as that address
-with `via` the relay. Half the slots keep their relay while it remains a
-candidate, taken by the first relays in the current list; the rest always go to the candidates first
-by SHA-256 of this node's key then the relay's. So no key can be ground to be
-every node's relay, nodes spread over relays, and relays that arrived first
-cannot hold every slot. A node targeted by relays whose keys were ground to rank
-first for it can still advertise only those; at worst browsers cannot reach it,
-as when a relay refuses to relay, and nothing it advertises is corrupted. The
-choice is made again when a session opens or a relay's ends, a relay's
-addresses change, or `setRelaying`, `setAutoRelay` or the declared addresses
-change, and sessions are told only when the result changes. A change other
-peers caused is told at most once every 10 seconds, the latest state when the
-interval ends; `setWebAddresses` and `setAutoRelay` take effect at once. A new
-session is told once. A declared list always wins, and auto relay is off by
-default.
-
-`providerReach` chooses what walks may do. `.walk`, the default, dials peers
-not yet connected, at most `maxProviderWalkSessions` open or being dialed and
-never into `reservedOutboundConnectionSlots`. `.connectedPeers` walks only
-among sessions already open and dials no one. A session a walk dialed is an
-ordinary session; `Ivy.isProviderWalkSession` tells the caller which ones
-they are, and keeping or closing them is the caller's choice.
-
-The caller may report content deficient after validation. Ivy then suppresses
-that peer briefly for that root; it does not create peer-global blame, close the
-connection, or affect messages and other roots. A later fetch can use another
-connected provider, fresh discovery, or fallback as a separate availability
-zone.
-
-## Relay and attribution
-
-Outbound relay initiation uses configured carriers, and after them the
-connected peers the application said relay (`setRelaying`), at most four for
-one connect, in key order. One with no session to the target says so at
-once, and the next is asked. A peer is asked only if it was said to relay
-because one that does not takes the request as a violation and ends the
-session; what was said of a peer is forgotten with its session. Peers do
-not say in the handshake whether they relay, so that is for the application
-to learn, in its own first message for one. A target may accept an
-inbound route offered by another authenticated direct peer without configuring
-that peer as its carrier. The route grants transport only: endpoint records
-remain signed end to end, so the offer cannot change either endpoint identity
-or place the carrier in endpoint routing. A carrier forwards each route in
-arrival order to its exact destination session, waits only until
-`requestTimeout` for writability, and then retires that route.
-
-Two peers that met through a carrier can move to a connection of their own.
-One of them supplies a stream to `connect(to:over:)`: the handshake runs
-beside the relayed session, and the direct session it makes replaces it. Both
-ends choose the same way, by one rule: a direct session is kept over a relayed
-one, and between two of a kind the smaller session ID is kept. The
-application hears `peerConnected` for the new session and no disconnect, and
-the route through the carrier is closed. The end that started the handshake
-finishes first, so its close of the route can reach the other end before the
-handshake's last record does; that end holds the disconnect, and reports it
-only if the handshake then fails. Records in flight on the relayed
-session when it is replaced are not resent. If the handshake fails the stream
-is closed and the relayed session stays; `connect` still reports the peer
-connected, so the caller reads the session's route to tell which it has. A
-peer on 15.x keeps the smaller ID whatever the route, so the two ends can
-disagree and drop the session: only upgrade toward a peer on this rule.
-
-Being a carrier is the configuring node's own choice, which the carrier cannot
-see: to it, that node is one more peer to query and gossip to. So a node takes
-only keepalives and relay control from a configured carrier and drops whatever
-else it sends, without ending the session or blaming it.
-
-Ivy attributes a violation only after verifying the charged peer's signature,
-or the session MAC for the peer's direction, which only the two ends hold and
-only the peer uses.
-Signed malformed endpoint payloads remain attributable through relay. Unsigned
-bytes are unattributed, and relay-controlled replay or sequence failure is
-ambiguous because a carrier can replay a valid record.
-
-Timeouts, failed dials, unavailable content, and local queue pressure remain
-route or service state, not protocol violations.
-
-## Node to node, behind NATs
-
-Two nodes that cannot be dialled reach each other the same way two browsers
-do, with another kind of stream. `PunchConnector` (`Sources/Ivy`) stands
-between a node and its delegate. When a relayed session to an endpoint
-appears, the two connectors exchange addresses on it, as peer messages on the
-topic `ivy.punch/1`, and then both connect at the same moment. Each one's
-first packet opens its own NAT for the other's. The stream that results is
-given to `connect(to:over:)` at one end and `accept` at the other, and the
-direct session replaces the relayed one as above. The core knows nothing of
-it.
-
-A signalling message is one byte of kind, a big-endian `u32` naming the
-attempt, and a body:
-
-| Kind | | Attempt | Body |
-| --- | --- | --- | --- |
-| 0 | request: "offer to me" | 0 | none |
-| 1 | offer | the offerer's choice, not 0 | the offerer's candidates |
-| 2 | answer | the offer's | the answerer's candidates |
-| 3 | sync: "connect now" | the offer's | none |
-| 4 | abandon | the offer's | none |
-
-Candidates are a count of 1 to 8, then for each its transport (1 TCP, 2
-QUIC), its port as a big-endian `u16`, and its host as a length byte and
-UTF-8 text of at most 64 bytes.
-
-- The peer with the smaller public key offers, always; the other asks. It is
-  also the one that starts the handshake over the stream, whichever end the
-  connection was made from.
-- The offerer measures the round trip from its offer to the answer, sends
-  the sync, and waits half of it before connecting, so both start together.
-- A candidate is dialled only if it is a public address and of a transport
-  this node has. A peer names its own addresses, and without that it could
-  aim a dial at a host inside this node's network.
-- Signalling counts only on the relayed session to an endpoint that is the
-  peer's session now; anything else on the topic is dropped, and the
-  application never sees the topic.
-- A relayed session busy with something else has no room for a message at
-  the moment it is sent. The signalling waits for room while its attempt
-  lasts.
-- The `log` option is told how each attempt ended, in a line.
-- One attempt per peer at a time, three for one relayed session, eight at
-  once. An attempt takes at most eight messages of at most 1 KiB, both ends
-  dial for six seconds, and it ends after fifteen, or when its peer abandons
-  it, or on anything malformed. The relayed session is left as it was.
-  Nothing about signalling ends a session.
-
-A transport is a `PunchTransport`. `TCPPunch` is the one there is: each end
-takes a port of the system's choosing, listens on it, and connects from it
-to the port the other named, again and again until the window closes. Both
-ends leave from the port the other aims at, so they can only have made one
-connection, whether the two first packets crossed (a simultaneous open) or
-one arrived after the other end's NAT had opened. It tells its peer the
-port it bound, so it needs a NAT that keeps a connection's port; one that
-gives each connection another port cannot be reached this way, and those
-peers stay relayed. IPv4 only.
-
-`Punch/run.sh` checks this on Linux with network namespaces: two nodes
-behind NATs that are first shown to refuse a stranger, NATs that drop and
-NATs that reset what they did not ask for, and a NAT that changes ports,
-where the two must stay on the relayed session.
-
-## Browser to browser
-
-Two browsers reach each other over a WebRTC data channel, which `Web/` sets up
-(`src/rtc.ts`, `src/datachannel.ts`) and the core knows nothing of: to it the
-channel is one more supplied stream. Both are connected to a carrier, and one
-opens a relayed session to the other. Offer, answer and ICE candidates then
-travel on that session as peer messages on the topic `ivy.rtc/1`. When the
-channel opens the offerer gives it to `connect(to:over:)` and the answerer to
-`accept`, and the direct session replaces the relayed one as above. There is
-no TURN: a carrier already relays for peers with no path to each other.
-
-Two peers behind different NATs each need the address the other can reach
-them at, which a browser learns only by STUN. Each asks the carrier its
-relayed session runs through, at the address it reached that carrier's
-WebSocket: no one else is asked, and the carrier already sees that address.
-Peers whose NATs give no usable address this way stay on the relayed session.
-
-A signalling message is one byte of kind, a big-endian `u32` naming the
-attempt, and UTF-8 text to the end:
-
-| Kind | | Attempt | Text |
-| --- | --- | --- | --- |
-| 0 | request: "offer to me" | 0 | none |
-| 1 | offer | the offerer's choice, not 0 | SDP |
-| 2 | answer | the offer's | SDP |
-| 3 | candidate | the offer's | one ICE candidate line, for the only media section |
-| 4 | abandon | the offer's | none |
-
-- The peer with the smaller public key is the offerer, always. The other asks
-  with a request, and an offer from it is dropped, so two peers that start at
-  once make one connection.
-- Signalling counts only when it arrives on the relayed session to an endpoint
-  that is the peer's session now. From a direct session or a carrier it is
-  dropped. Either way the application never sees the topic.
-- One attempt per peer at a time, and three for one relayed session. A message
-  for another attempt is dropped. An attempt takes at most 64 messages of at
-  most 8 KiB and sends at most 64 candidates.
-- An attempt ends after 20 seconds, or when its peer abandons it, or on
-  anything malformed: an unknown kind, a description or candidate the browser
-  refuses, an answer nobody asked for. Its peer connection is closed and the
-  relayed session is left as it was. Nothing about signalling ends a session.
-- The peer connection is closed when its stream closes, when the peer
-  disconnects, and when the connector is closed.
-
-Signalling is as authentic as the relayed session: its records are signed or
-MACed end to end, so the carrier can drop or delay an offer but not forge one. It is
-not what authenticates the channel. The core's handshake runs over the
-channel as over any stream: the offerer accepts only the key it meant to
-reach, and the answerer learns the key of whoever is there, as on any stream
-it accepts. Whoever carried the signalling, a session exists only with a peer
-that proved its key over the channel itself.
-
-The end that completes the handshake first closes the relayed session. The
-other end can hear of that through the carrier before the handshake's last
-record reaches it over the channel; the core holds that disconnect, so each
-application hears only `peerConnected` for the direct session.
-
-A data channel delivers whatever its peer sends and cannot be paused, so the
-transport adds a credit window. Every data-channel message is at most 16 KiB,
-the size all browsers exchange, and starts with a type byte: `0` and up to
-16 383 bytes of the stream, or `1` and a big-endian `u32` granting that many
-more bytes. Each end starts with 1 MiB of credit and never has more than that
-outstanding. A receiver hands bytes over only as the core asks, at most
-64 KiB at a time, and grants back what was taken once that is a quarter of
-the window; so it holds at most 1 MiB unread, and a peer that sends past its
-credit is closed. A sender regains credit once a round trip at best, so the
-window is what one round trip carries: 1 MiB keeps a 100 ms path above
-10 MiB/s. The stream is writable while it has credit and the channel's own
-buffer is under 256 KiB.
-
-The observed host is the remote address of the selected ICE candidate pair.
-A browser often hides that address, behind an mDNS name of its own choosing
-or behind nothing; a name says nothing of where a peer is and the peer picks
-it, so the stream is then given `<peer key>.webrtc.invalid`, for the key the
-signalling was signed by. `NetGroup` puts a host that is not an address in a
-group of its own, so such peers are admitted and do not share a netgroup; the
-netgroup limit does not bound them, and `maxConnections` does.
+Building the module and using it from JavaScript is in
+[Ivy in JavaScript](../Web/README.md).
 
 ## Lifecycle
 
-Lifecycle calls execute in order. `stop` answers every request, closes every
-connection and drops every deadline in one step; identifiers are never reused,
-so a completion from an old run names nothing in a newer one. A callback
-retains its exact authenticated session and cannot send a reply through a
-replacement session for the same peer.
+- Lifecycle calls execute in order. `start()` and `stop()` are restart-safe.
+- `stop` answers every request, closes every connection and drops every
+  deadline in one step.
+- Identifiers are never reused, so a completion from an old run names nothing
+  in a newer one.
+- A callback retains its exact authenticated session and cannot send a reply
+  through a replacement session for the same peer.
 
-See [correctness-invariants.md](correctness-invariants.md) for the normative
-review laws.
+## Tests
+
+| Suite | Covers |
+| --- | --- |
+| `IvyCoreTests` | The core on virtual time: wire and session vectors, then one file per area, and `DeterminismTests` |
+| `IvyTests` | The shell over real TCP |
+| `IvyWebSocketTests` | The WebSocket transport |
+| `Interop/run.sh` | One program built against this version and against 15.0.1, run against each other over TCP in both directions |
+| `Punch/run.sh` | NAT punching, on Linux |
+| `Wasm/run.sh` | The core as WebAssembly, and the JavaScript shell |
+
+One test hook exists in the shell, `setDialEndpointRewriteForTesting`: it
+redirects the shell's dial so that nodes advertising routable addresses can
+run on one machine. The core never sees it.
+
+The laws the tests hold Ivy to are the
+[correctness invariants](correctness-invariants.md).

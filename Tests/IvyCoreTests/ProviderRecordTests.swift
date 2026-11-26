@@ -5,7 +5,7 @@ import XCTest
 import Tally
 
 /// Provider records: announcing, storing, expiring, querying and bounding
-/// them (docs/architecture.md "Routing and content", IVY-013 and IVY-014).
+/// them (docs/wire-protocol.md "Provider records", IVY-014).
 final class ProviderRecordTests: XCTestCase {
     private func record(_ endpoint: PeerEndpoint, _ expiresAt: UInt64) -> ProviderRecord {
         ProviderRecord(endpoint: endpoint, expiresAt: expiresAt)

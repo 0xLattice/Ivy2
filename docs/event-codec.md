@@ -1,16 +1,32 @@
-# Event codec
+# Ivy host event codec
 
-`IvyCore.step` takes an `Event` and returns `[Effect]`. A host that cannot
-hold those Swift values, such as JavaScript driving the core as WebAssembly,
-passes them as the bytes described here. This is not the wire protocol: it
-never leaves the machine, and it is versioned on its own.
+The byte format a host uses to drive `IvyCore` when it cannot hold Swift
+values: JavaScript driving the core as WebAssembly. Read this to write or
+change such a host. It is the boundary between the core and its host on one
+machine, and it never leaves that machine.
 
-Two implementations exist and must agree: `Sources/IvyCore/EventCodec.swift`
-and `Web/src/codec.ts`. `Web/test/vectors.json` holds an encoding of every
-case. The Swift suite regenerates it and fails if the checked-in file differs
-(`IVY_UPDATE_VECTORS=1 swift test --filter EventCodecTests` rewrites it); the
-TypeScript suite decodes and re-encodes every vector and must get the same
-bytes.
+**This is not what peers send each other.** That is the
+[wire protocol](wire-protocol.md). This format is versioned on its own.
+
+`IvyCore.step` takes an `Event` and returns `[Effect]`
+([the contract for a shell](architecture.md#the-contract-for-a-shell)); a
+host passes them as the bytes described here. The module's exports that
+carry them are in
+[Ivy in JavaScript](../Web/README.md#the-modules-interface).
+
+## Implementations and test vectors
+
+Two implementations exist and must agree:
+
+- `Sources/IvyCore/EventCodec.swift`
+- `Web/src/codec.ts`
+
+`Web/test/vectors.json` holds an encoding of every case.
+
+- The Swift suite regenerates it and fails if the checked-in file differs.
+  `IVY_UPDATE_VECTORS=1 swift test --filter EventCodecTests` rewrites it.
+- The TypeScript suite decodes and re-encodes every vector and must get the
+  same bytes.
 
 ## Primitives
 
@@ -32,9 +48,13 @@ All integers are big-endian, like the wire codec.
 A payload costs its own length plus four bytes; nothing is escaped or
 re-encoded, so megabytes pass through as they are.
 
+## Versioning
+
 Every encoding starts with one version byte, currently `2`, and holds exactly
 one value: bytes after its end are an error. A change to anything below is a
 new version, except a new tag: an encoding that never used it is unchanged.
+
+## What decoding refuses
 
 Decoding takes untrusted bytes and refuses, without trapping:
 
